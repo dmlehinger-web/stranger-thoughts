@@ -1,9 +1,12 @@
 .env
 .env.*
+!.env.example
+*.pem
+*.key
+node_modules/
 __pycache__/
 *.pyc
 .DS_Store
 .Python
-node_modules/
 .venv/
 venv/
