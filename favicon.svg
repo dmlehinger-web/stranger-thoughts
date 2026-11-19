@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Stranger Thoughts">
+  <rect width="32" height="32" fill="#efe8db"/>
+  <path d="M7 5.5h12.2L25 11.2V26.5H7V5.5z" fill="#f3eee4" stroke="#1c1915" stroke-width="1.4"/>
+  <path d="M19.2 5.5V11.2H25" fill="none" stroke="#1c1915" stroke-width="1.4"/>
+  <path d="M11 16.2h10M11 20h6.5" fill="none" stroke="#5c322b" stroke-width="1.4" stroke-linecap="square"/>
+</svg>

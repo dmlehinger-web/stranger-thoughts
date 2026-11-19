@@ -1,0 +1,14 @@
+{
+  "name": "Stranger Thoughts",
+  "base_path": "/stranger-thoughts",
+  "origin": "https://dmlehinger-web.github.io",
+  "planned_domain": "getstrangerthoughts.com",
+  "domain_status": "not_live",
+  "waitlist_email": "waitlist@strangerthoughts.example",
+  "waitlist_email_is_placeholder": true,
+  "mailing_address": "Mailing address coming soon",
+  "status": "Waitlist only. The desk is not accepting paid work.",
+  "footer": "Stranger Thoughts is a reading desk. A real human, not an AI, reads submissions once the waitlist opens. Version one is waitlist only: no prices, no payment, and no donations.",
+  "checked": "2026-11-19",
+  "locale": "en-US"
+}

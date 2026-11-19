@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action mailto:">
+<title>@@TITLE@@</title>
+<meta name="description" content="@@DESCRIPTION@@">
+<link rel="canonical" href="@@CANONICAL@@">
+<meta property="og:title" content="@@TITLE@@">
+<meta property="og:description" content="@@DESCRIPTION@@">
+<meta property="og:url" content="@@CANONICAL@@">
+<meta property="og:type" content="@@OG_TYPE@@">
+<meta property="og:site_name" content="@@SITE_NAME@@">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="@@TITLE@@">
+<meta name="twitter:description" content="@@DESCRIPTION@@">
+<meta name="theme-color" content="#efe8db">
+@@EXTRA_HEAD@@
+@@ROBOTS@@
+<link rel="icon" href="@@FAVICON@@" type="image/svg+xml">
+<link rel="stylesheet" href="@@CSS@@">
+@@JSONLD@@
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="@@HOME@@">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M3.5 3h11L20.5 9v12h-17V3z" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M14.5 3V9h6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M7 13h10M7 16.5h6.5" stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+      <span>Stranger Thoughts</span>
+    </a>
+    <nav class="site-nav" aria-label="Primary">
+      <ul>
+        @@NAV@@
+      </ul>
+    </nav>
+  </div>
+</header>
+<main id="content">
+@@BODY@@
+</main>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <p>@@FOOTER@@</p>
+    <p class="footer-note">@@ADDRESS_LINE@@</p>
+    <ul class="footer-links">
+      @@FOOTER_LINKS@@
+    </ul>
+  </div>
+</footer>
+</body>
+</html>

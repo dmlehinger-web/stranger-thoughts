@@ -1,0 +1,29 @@
+{
+  "title": "Stranger Thoughts",
+  "description": "Send writing to a real, unnamed person and receive a thoughtful reply, often handwritten. The desk is a waitlist. It takes no payment yet.",
+  "kicker": "A desk for other people's pages",
+  "headline": "Talk to a stranger and get their thoughts.",
+  "lede": "Send a piece of writing. A real person, who does not publish a name or a face here, will read it and answer. Many of those replies will be handwritten. Some will be typed. Online submission and mail are both still closed. The door that is open is the waitlist, and there is nothing to pay.",
+  "steps_heading": "How it works",
+  "steps": [
+    {
+      "title": "You write",
+      "text": "Bring a letter, a page, or a paragraph you have been carrying. The waitlist asks what you would send. It does not take the page itself."
+    },
+    {
+      "title": "A person reads it",
+      "text": "One real reader goes through the writing and notices what it is doing: the temperature of the sentences, the trouble the page keeps circling, and the line the other lines protect. The reader stays unnamed on this site."
+    },
+    {
+      "title": "A reply comes back",
+      "text": "You receive a reading in sentences. Many replies will be handwritten. Some will be typed, when the thought is long or a clean copy will serve you better. The reply interprets the page. It does not grade it."
+    },
+    {
+      "title": "The page stays yours",
+      "text": "The original is still your writing. The reply is a record of one stranger's attention, including the places it might be wrong. Those places should be marked as unsure."
+    }
+  ],
+  "steps_note": "Online submission, mail, and a promised turnaround are all still ahead.",
+  "thoughts_heading": "Recent thoughts",
+  "thoughts_intro": "Notes from the desk, published so the standard is visible before any page is accepted. These are not replies to clients."
+}

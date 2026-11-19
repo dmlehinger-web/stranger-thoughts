@@ -1,0 +1,41 @@
+{
+  "slug": "three-questions-before-you-send",
+  "title": "Three questions before you send a page",
+  "date": "2026-11-19",
+  "kicker": "A prompt",
+  "description": "Three questions to ask a page before a stranger reads it: the cut line, the seam in the voice, and the risk a friend might skip.",
+  "blocks": [
+    {
+      "type": "p",
+      "text": "These questions are for the hour before you decide a page is ready for someone who does not know you. Answer them in the margin of your own copy. You do not have to send the answers."
+    },
+    {
+      "type": "h2",
+      "text": "What did you almost leave out?"
+    },
+    {
+      "type": "p",
+      "text": "The cut line is often the one with heat in it. If you removed it to keep a person safe, or because it was cruel, leave it out. If you removed it because it embarrassed you and the page went dull, put it back and watch the lines around it. They usually have to grow up once the real sentence is in the room."
+    },
+    {
+      "type": "h2",
+      "text": "Where does the voice change?"
+    },
+    {
+      "type": "p",
+      "text": "Read aloud until you hear yourself become a press release, a text message, or a student handing something in. The seam is information. Sometimes the new register is the true one and the rest was costume. Sometimes the costume arrives late and starts apologizing for the page. A stranger will hear that seam. You can mark it first, which gives you a choice."
+    },
+    {
+      "type": "h2",
+      "text": "What should a stranger notice?"
+    },
+    {
+      "type": "p",
+      "text": "Friends protect you. That is a virtue in a friend and a limit in a reader. Name the risk yourself: a soft ending, an image that repeats until it thins, a joke standing where the point should be. Write that wish where you can see it."
+    },
+    {
+      "type": "p",
+      "text": "The desk is not taking pages yet. If one of these questions moved a sentence, that was enough for today. When a waitlist note becomes a real submission, send the page that survived the questions."
+    }
+  ]
+}
