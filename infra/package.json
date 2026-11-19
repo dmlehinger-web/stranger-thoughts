@@ -1,0 +1,19 @@
+{
+  "name": "stranger-thoughts-infra",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "synth": "cdk synth -c stage=dev --quiet",
+    "test": "tsx --test test/security.test.ts",
+    "deploy": "echo 'Do not deploy from a pull request. Follow docs/DEPLOY.md.' && exit 1"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.220.0",
+    "constructs": "10.4.2"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.1101.0",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

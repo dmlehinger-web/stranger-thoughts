@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="noindex">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com https://connect.stripe.com">
+  <title>Write — Stranger Thoughts</title>
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <div class="page">
+    <header class="top">
+      <a class="brand" href="../"><span>Stranger</span> <em>Thoughts</em></a>
+      <p class="subline">For writers</p>
+    </header>
+    <main id="content">
+      <h1>A name for the letter, and nothing more required.</h1>
+      <p class="lede">Your pseudonym is what the stranger sees. Email is how we know the account is yours. It is never shown to a reader.</p>
+      <form id="signup">
+        <label for="pseudonym">Pseudonym</label>
+        <input id="pseudonym" name="pseudonym" type="text" autocomplete="nickname" required maxlength="40" value="North Window">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="new-password" minlength="15" required>
+        <p class="hint">At least 15 characters. A passphrase is easier to remember than a short password with symbols.</p>
+        <div class="section-head">
+          <h2>About you, if you want</h2>
+          <button id="hide" class="text-link" type="button">Hide</button>
+        </div>
+        <p class="hint">Optional, deletable, and never used to choose who you write to. Nothing here is shown to a reader.</p>
+        <div id="about">
+          <label for="age">Age range</label>
+          <select id="age" name="age_range">
+            <option value="">Prefer not to say</option>
+            <option>18-24</option>
+            <option>25-34</option>
+            <option>35-44</option>
+            <option>45-54</option>
+            <option>55-64</option>
+            <option>65+</option>
+          </select>
+          <label for="location">Region</label>
+          <select id="location" name="location_bucket">
+            <option value="">Prefer not to say</option>
+            <option>United States — Northeast</option>
+            <option>United States — Midwest</option>
+            <option>United States — South</option>
+            <option>United States — West</option>
+            <option>United States — Pacific</option>
+            <option>Canada</option>
+            <option>United Kingdom</option>
+            <option>Europe</option>
+            <option>Latin America</option>
+            <option>Africa</option>
+            <option>Middle East</option>
+            <option>Asia</option>
+            <option>Oceania</option>
+          </select>
+          <label for="race">Race</label>
+          <select id="race" name="race">
+            <option value="">Prefer not to say</option>
+            <option value="asian">Asian</option>
+            <option value="black">Black</option>
+            <option value="hispanic_or_latino">Hispanic or Latino</option>
+            <option value="middle_eastern_or_north_african">Middle Eastern or North African</option>
+            <option value="native_american_or_alaska_native">Native American or Alaska Native</option>
+            <option value="pacific_islander">Pacific Islander</option>
+            <option value="white">White</option>
+            <option value="two_or_more">Two or more</option>
+            <option value="another">Another</option>
+          </select>
+          <label for="economic">Economic status</label>
+          <select id="economic" name="economic_status">
+            <option value="">Prefer not to say</option>
+            <option value="lower">Lower</option>
+            <option value="middle">Middle</option>
+            <option value="higher">Higher</option>
+          </select>
+        </div>
+        <div class="stack tip-actions">
+          <button class="btn btn-primary" type="submit">Continue</button>
+        </div>
+        <p class="status" data-status></p>
+      </form>
+    </main>
+  </div>
+  <script src="../js/config.js"></script>
+  <script type="module" src="../js/pages/writer-signup.js"></script>
+</body>
+</html>

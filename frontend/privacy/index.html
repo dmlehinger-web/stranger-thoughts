@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="noindex">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com https://connect.stripe.com">
+  <title>Privacy — Stranger Thoughts</title>
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+  <div class="page prose">
+    <header class="top">
+      <a class="brand" href="../"><span>Stranger</span> <em>Thoughts</em></a>
+    </header>
+    <main>
+      <h1>Privacy</h1>
+      <p class="quiet">Draft, for review before any real personal information is collected in a deployed environment. This is not a finished legal policy.</p>
+      <h2>What we ask for</h2>
+      <p>A writer account needs an email and a pseudonym. Optional descriptors — age range (18 and older only), a coarse region, race, and an economic-status range — are stored only if you choose them. They are not used to pick a match, and you can delete them without deleting the account.</p>
+      <p>A reader account needs an email, a pseudonym, and a mailing address so a matched writer can send a letter. A PO box or virtual mailbox is the address we hope you use. A street address is accepted and treated as highly sensitive.</p>
+      <p>We do not collect information from anyone under 13, and the age question has no child ranges.</p>
+      <h2>Who can see a mailing address</h2>
+      <p>The address is encrypted before it is stored. It is shown only to the writer who is currently matched to that reader, and only for that match. It is not included in letter lists, older matches, or logs. When you rotate, the previous writer can no longer read it.</p>
+      <h2>Payments</h2>
+      <p>Tips use Stripe Checkout and Stripe Connect. Card numbers are entered on Stripe, not on this site. Connect Express identity checks are Stripe’s. Until the owner turns on live payments, the service is built for Stripe test mode only.</p>
+      <h2>Deletion</h2>
+      <p>Deleting an account removes the profile, the optional descriptors, and the encrypted address. Letter rows that other people still need for their own history keep a match id and a timestamp, with the pseudonym replaced by “Removed”. Payment rows keep ids and amounts so a tip can be reconciled. Backups from point-in-time recovery can hold ciphertext for up to 35 days.</p>
+      <p>The full inventory is in the repository at <code>docs/SECURITY-REVIEW.md</code>.</p>
+    </main>
+  </div>
+</body>
+</html>

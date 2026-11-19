@@ -1,0 +1,33 @@
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # Unmaintained, not a vulnerability. Timestamps stay on chrono until a
+  # later change moves them to jiff. There is no patched chrono release.
+  "RUSTSEC-2026-0543",
+]
+
+[licenses]
+version = 2
+private = { ignore = true }
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "MPL-2.0",
+  "Zlib",
+  "CDLA-Permissive-2.0",
+  "OpenSSL",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

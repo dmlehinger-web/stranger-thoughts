@@ -1,0 +1,47 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: clippy
+      - name: test
+        working-directory: backend
+        run: cargo test --workspace
+      - name: clippy
+        working-directory: backend
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: backend/Cargo.toml
+          command: check
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+      - name: policy tests and synth
+        working-directory: infra
+        run: npm ci && npm test && npx cdk synth -c stage=dev --quiet
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: v2 page checks
+        run: python3 frontend/check.py
+      - name: waitlist site still builds
+        run: python3 scripts/build.py
