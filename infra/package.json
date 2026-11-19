@@ -8,7 +8,7 @@
     "deploy": "echo 'Do not deploy from a pull request. Follow docs/DEPLOY.md.' && exit 1"
   },
   "dependencies": {
-    "aws-cdk-lib": "2.220.0",
+    "aws-cdk-lib": "2.260.0",
     "constructs": "10.4.2"
   },
   "devDependencies": {
