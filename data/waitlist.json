@@ -1,0 +1,42 @@
+{
+  "title": "Waitlist",
+  "description": "Ask to be told when Stranger Thoughts opens. The form starts an email to a placeholder address. It does not take payment or a manuscript.",
+  "intro": [
+    "Version one is a waitlist. The desk is not accepting paid work, manuscripts, or mail. Joining means you want to hear when a real submission path opens.",
+    "Nothing on this form is posted to a server. Submitting it opens an email in your own mail app. The direct address below does the same thing with an empty letter."
+  ],
+  "form_heading": "Tell the desk what you are holding",
+  "form_note": "All three fields are required. Describe the page. Do not paste the whole piece.",
+  "subject": "Stranger Thoughts waitlist",
+  "submit": "Open a waitlist email",
+  "fields": [
+    {
+      "name": "name",
+      "label": "Name",
+      "type": "text",
+      "required": true,
+      "autocomplete": "name",
+      "maxlength": 120
+    },
+    {
+      "name": "email",
+      "label": "Email",
+      "type": "email",
+      "required": true,
+      "autocomplete": "email",
+      "maxlength": 120
+    },
+    {
+      "name": "piece",
+      "label": "What you would send",
+      "type": "textarea",
+      "required": true,
+      "maxlength": 1200,
+      "help": "A few sentences on the kind of page, and what you hope a stranger notices. This is a description, not the submission.",
+      "placeholder": "A letter I have been revising. I want a stranger to notice the ending."
+    }
+  ],
+  "after": [
+    "When a real mailbox replaces the placeholder, this page will say so in the address block above. Until then, treat the waitlist as a draft of the door."
+  ]
+}

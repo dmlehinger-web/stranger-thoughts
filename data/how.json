@@ -1,0 +1,52 @@
+{
+  "title": "How it works",
+  "description": "Online submission and mail are both still coming. Here is what a reply includes, how anonymity works, and why turnaround is still to be determined.",
+  "intro": [
+    "The desk will take writing two ways. Both are still being built. This page says what each one is for, what comes back, and what is deliberately still blank."
+  ],
+  "sections": [
+    {
+      "title": "Online submission",
+      "kicker": "Coming",
+      "paragraphs": [
+        "You will send the writing from this site, along with a way to reach you. There is no upload today. Pasting a manuscript into the waitlist will not get it read. The waitlist only records that you want a place in line, and what kind of page you are holding."
+      ]
+    },
+    {
+      "title": "Mail",
+      "kicker": "Coming",
+      "paragraphs": [
+        "A paper page will be welcome later: read, thought about, and answered, often in the margin or on a following sheet. Do not mail anything yet. No street address is published, and a guessed address would not reach this desk."
+      ],
+      "show_address": true
+    },
+    {
+      "title": "What you get back",
+      "items": [
+        "A reading of the specific page: what it circles, where the voice changes, and which sentence the rest of the writing protects.",
+        "A reply in sentences, handwritten when the note should sit beside the page, typed when it needs length or a cleaner copy.",
+        "The reader's uncertainty, written down in the places the reading might be wrong.",
+        "Your original, still yours. The desk does not publish your writing as a public note."
+      ]
+    },
+    {
+      "title": "Turnaround",
+      "paragraphs": [
+        "No number of days is promised. A published window would be a guess, and a guess would become a broken promise in the first week. When the desk has a rhythm, the range will be printed on this page before anyone is asked to send work. Until then the true status is to be determined."
+      ]
+    },
+    {
+      "title": "The reader",
+      "paragraphs": [
+        "The reader is one real person. Reputation here means the standard on the About page and the public notes, kept in view, where you can test them. This site will not show a face, a legal name, a rank, a unit, or a location. Anonymity belongs to the reader. Your name and your page are used to answer you."
+      ]
+    },
+    {
+      "title": "A daily note on X",
+      "kicker": "Coming",
+      "paragraphs": [
+        "This site is home. A brand account on X will later post each daily Thought, with no photos, no location, and no military unit. The account is not open. This page will link a handle only when one exists."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "slug": "your-slug-here",
+  "title": "Replace this title",
+  "date": "YYYY-MM-DD",
+  "kicker": "Craft note",
+  "description": "One or two sentences for the thoughts index and the page description.",
+  "blocks": [
+    {
+      "type": "p",
+      "text": "Replace this with the first paragraph. Say one concrete thing a reader can use. Keep names, faces, locations, and service history off the page."
+    },
+    {
+      "type": "h2",
+      "text": "A subheading if the note turns"
+    },
+    {
+      "type": "p",
+      "text": "Replace this with the second paragraph. These notes are public samples of attention. They are not stories about a client's private page."
+    }
+  ]
+}
