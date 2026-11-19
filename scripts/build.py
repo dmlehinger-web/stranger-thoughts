@@ -69,35 +69,14 @@ VOID_TAGS = {
 SECTION_KEYS = {"title", "kicker", "paragraphs", "items", "closing", "show_address"}
 FIELD_NAMES = {"name", "email", "piece"}
 RECENT_LIMIT = 3
-
-WAITLIST_SCRIPT = """<script>
-(function () {
-  var form = document.querySelector(".waitlist-form");
-  if (!form) return;
-  form.addEventListener("submit", function (event) {
-    var desk = form.getAttribute("data-email") || "";
-    var who = (form.elements.name.value || "").trim();
-    var reply = (form.elements.email.value || "").trim();
-    var piece = (form.elements.piece.value || "").trim();
-    if (!desk || !who || !reply || !piece) return;
-    event.preventDefault();
-    var subject = form.getAttribute("data-subject") || "Stranger Thoughts waitlist";
-    var body = [
-      "Name: " + who,
-      "Email: " + reply,
-      "",
-      "What I would send:",
-      piece,
-      "",
-      "I understand this is a waitlist. The desk is not accepting paid work yet."
-    ].join("\\n");
-    window.location.href = "mailto:" + desk
-      + "?subject=" + encodeURIComponent(subject)
-      + "&body=" + encodeURIComponent(body);
-  });
-})();
-</script>
-"""
+REFERRER_META = '<meta name="referrer" content="strict-origin-when-cross-origin">'
+CSP_META = (
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; '
+    "img-src 'self' data:; style-src 'self'; script-src 'none'; "
+    "object-src 'none'; base-uri 'self'; form-action mailto:\">"
+)
+ANCHOR_RE = re.compile(r"<a\b[^>]*>")
+CLASSIC_SCRIPT_RE = re.compile(r'<script(?![^>]*type="application/ld\+json")')
 
 
 def die(message: str) -> None:
@@ -248,6 +227,10 @@ def guard_tree(value, label: str) -> None:
             die(f"{label} contains a phone number")
         if SOCIAL_RE.search(item) or HANDLE_RE.search(item):
             die(f"{label} links a social account or handle")
+        if "http://" in item:
+            die(f"{label} contains an http:// URL; remote links must use https://")
+        if "javascript:" in item.lower():
+            die(f"{label} contains a javascript: URL")
         if "@@" in item:
             die(f"{label} contains a template token")
 
@@ -463,7 +446,7 @@ def fill(template: str, mapping: dict[str, str], label: str) -> str:
 
 def render(title: str, description: str, path: str, body: str, section: str,
            graph: list[dict], robots: str = "", og_type: str = "website",
-           extra_head: str = "", extra_body: str = "") -> str:
+           extra_head: str = "") -> str:
     if path == "404":
         canonical = absolute(href_file("404.html"))
     else:
@@ -487,7 +470,6 @@ def render(title: str, description: str, path: str, body: str, section: str,
         "@@ADDRESS_LINE@@": esc(SITE["mailing_address"]),
         "@@FOOTER_LINKS@@": footer_links(),
         "@@BODY@@": body,
-        "@@EXTRA_BODY@@": extra_body,
     }
     return GENERATED + fill(TEMPLATE, mapping, "templates/page.html")
 
@@ -644,7 +626,7 @@ def render_waitlist() -> str:
         f'<p>{esc(text_block(WAITLIST["form_note"], "waitlist form note", 12, 240))}</p>',
         (
             f'<form class="waitlist-form" method="post" enctype="text/plain" '
-            f'action="{esc(mailto_url)}" data-email="{esc(email)}" data-subject="{esc(subject)}">'
+            f'action="{esc(mailto_url)}">'
         ),
         "\n".join(rendered_fields),
         f'<button class="button" type="submit">{esc(text_block(WAITLIST["submit"], "waitlist submit", 3, 40))}</button>',
@@ -653,10 +635,7 @@ def render_waitlist() -> str:
         "</article>",
     ])
     graph = [page_node(title, description, "waitlist")]
-    return render(
-        title, description, "waitlist", body, "waitlist", graph,
-        extra_body=WAITLIST_SCRIPT,
-    )
+    return render(title, description, "waitlist", body, "waitlist", graph)
 
 
 def render_thoughts_index() -> str:
@@ -836,6 +815,36 @@ def verify(pages: dict[str, str], sitemap: str, robots: str) -> None:
             problems.append(f"{relative} is missing the honesty note or waitlist line")
         if "Mailing address coming soon" not in page:
             problems.append(f"{relative} is missing the mailing-address placeholder")
+        if REFERRER_META not in page:
+            problems.append(f"{relative} is missing the referrer policy")
+        if CSP_META not in page:
+            problems.append(f"{relative} is missing the Content-Security-Policy")
+        if "script-src 'none'" not in page or "form-action mailto:" not in page:
+            problems.append(f"{relative} CSP must set script-src 'none' and form-action mailto:")
+        if CLASSIC_SCRIPT_RE.search(page):
+            problems.append(f"{relative} has a non-JSON-LD script")
+        if "javascript:" in lowered or "addeventlistener" in lowered:
+            problems.append(f"{relative} contains classic JavaScript")
+        if 'href="http://' in page or "href='http://" in page or 'src="http://' in page:
+            problems.append(f"{relative} has an http:// link")
+        for blob in re.findall(
+            r'<script type="application/ld\+json">\n(.*?)\n</script>', page, re.S
+        ):
+            if "http://" in blob:
+                problems.append(f"{relative} JSON-LD contains an http:// URL")
+        for tag in ANCHOR_RE.findall(page):
+            href_match = re.search(r'href="([^"]*)"', tag)
+            if not href_match:
+                continue
+            outbound = href_match.group(1)
+            if not outbound.startswith("https://") or outbound.startswith(ORIGIN + "/"):
+                continue
+            rel_match = re.search(r'rel="([^"]*)"', tag)
+            rel_parts = rel_match.group(1).split() if rel_match else []
+            if "noopener" not in rel_parts or "noreferrer" not in rel_parts:
+                problems.append(
+                    f"{relative} outbound https link is missing rel=\"noopener noreferrer\": {outbound}"
+                )
         forms = page.count("<form")
         if relative == "waitlist/index.html":
             if forms != 1 or 'action="mailto:' not in page:
@@ -856,8 +865,15 @@ def verify(pages: dict[str, str], sitemap: str, robots: str) -> None:
                 if not url.startswith("mailto:" + SITE["waitlist_email"]):
                     problems.append(f"{relative} mailto is not the waitlist address")
                 continue
-            if url.startswith(("http://", "https://")) and not url.startswith(ORIGIN + "/"):
-                problems.append(f"{relative} has an external link {url}")
+            if url.startswith("http://"):
+                problems.append(f"{relative} has an http:// link: {url}")
+                continue
+            if url.startswith("https://") and not url.startswith(ORIGIN + "/"):
+                in_anchor = any(
+                    f'href="{url}"' in tag for tag in ANCHOR_RE.findall(page)
+                )
+                if not in_anchor:
+                    problems.append(f"{relative} loads an external URL outside a link: {url}")
                 continue
             target = local_target(url)
             if target is None:
@@ -879,6 +895,14 @@ def verify(pages: dict[str, str], sitemap: str, robots: str) -> None:
             problems.append("404 page should be noindex and absent from the sitemap")
     if "Sitemap:" not in robots or absolute(href_file("sitemap.xml")) not in robots:
         problems.append("robots.txt is missing the sitemap URL")
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    for line in (".env", ".env.*", "!.env.example", "*.pem", "*.key"):
+        if line not in ignore:
+            problems.append(f".gitignore is missing {line}")
+    policy = ROOT / "SECURITY.md"
+    advisory = "https://github.com/dmlehinger-web/stranger-thoughts/security/advisories/new"
+    if not policy.exists() or advisory not in policy.read_text(encoding="utf-8"):
+        problems.append("SECURITY.md must point at GitHub private vulnerability reporting")
     if problems:
         for problem in problems:
             print(f"build error: {problem}", file=sys.stderr)

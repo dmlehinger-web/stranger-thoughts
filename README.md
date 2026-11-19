@@ -19,7 +19,7 @@ The preview URL is [https://dmlehinger-web.github.io/stranger-thoughts/](https:/
 | The margin is the work | `/thoughts/the-margin-is-the-work/` |
 | Three questions before you send a page | `/thoughts/three-questions-before-you-send/` |
 
-`sitemap.xml` and `robots.txt` list the public pages. `404.html` is omitted from the sitemap. There is no analytics tag and no third-party font.
+`sitemap.xml` and `robots.txt` list the public pages. `404.html` is omitted from the sitemap. There is no analytics tag, no cookie, and no third-party font. Pages carry a referrer policy and a Content-Security-Policy that allows no classic scripts. The waitlist is a `mailto:` link plus a `mailto:` form, so it opens the mail app without JavaScript. Report a vulnerability privately; see [SECURITY.md](SECURITY.md).
 
 ## How the files fit together
 
@@ -84,7 +84,7 @@ When DNS is ready, do the cutover in one commit:
 6. Run `python3 scripts/build.py` and commit the JSON, the `CNAME` file, and the regenerated HTML, sitemap, and robots file together. Links drop the `/stranger-thoughts/` prefix in that build. The custom domain serves the site from `/`, so the prefix has to go at the same time as the `CNAME` file.
 7. In Pages settings, confirm the custom domain. Turn on **Enforce HTTPS** after the certificate is issued. That can take a while after DNS is correct.
 
-The build refuses a `CNAME` file while `domain_status` is `not_live`. It also refuses any mailing address other than `Mailing address coming soon`, a personal-inbox waitlist address, a social profile URL, or a street address in the copy. Change the mailing-address check in `scripts/build.py` only when a real, non-residential desk address exists.
+The build refuses a `CNAME` file while `domain_status` is `not_live`. It also refuses any mailing address other than `Mailing address coming soon`, a personal-inbox waitlist address, a social profile URL, a street address, an `http://` link, or a classic `<script>` (JSON-LD data blocks are the only scripts). Every generated page must include the referrer policy and the Content-Security-Policy. An outbound `https://` link must use `rel="noopener noreferrer"`. Change the mailing-address check in `scripts/build.py` only when a real, non-residential desk address exists.
 
 ## What this draft leaves for later
 

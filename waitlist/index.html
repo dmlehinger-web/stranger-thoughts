@@ -4,6 +4,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action mailto:">
 <title>Waitlist · Stranger Thoughts</title>
 <meta name="description" content="Ask to be told when Stranger Thoughts opens. The form starts an email to a placeholder address. It does not take payment or a manuscript.">
 <link rel="canonical" href="https://dmlehinger-web.github.io/stranger-thoughts/waitlist/">
@@ -78,7 +80,7 @@
 </div>
 <h2>Tell the desk what you are holding</h2>
 <p>All three fields are required. Describe the page. Do not paste the whole piece.</p>
-<form class="waitlist-form" method="post" enctype="text/plain" action="mailto:waitlist@strangerthoughts.example?subject=Stranger%20Thoughts%20waitlist" data-email="waitlist@strangerthoughts.example" data-subject="Stranger Thoughts waitlist">
+<form class="waitlist-form" method="post" enctype="text/plain" action="mailto:waitlist@strangerthoughts.example?subject=Stranger%20Thoughts%20waitlist">
 <div class="field"><label for="field-name">Name</label><input id="field-name" name="name" required maxlength="120" autocomplete="name" type="text"></div>
 <div class="field"><label for="field-email">Email</label><input id="field-email" name="email" required maxlength="120" autocomplete="email" type="email"></div>
 <div class="field"><label for="field-piece">What you would send</label><textarea id="field-piece" name="piece" required maxlength="1200" aria-describedby="field-piece-help" placeholder="A letter I have been revising. I want a stranger to notice the ending." rows="6"></textarea><p class="help" id="field-piece-help">A few sentences on the kind of page, and what you hope a stranger notices. This is a description, not the submission.</p></div>
@@ -100,33 +102,5 @@
     </ul>
   </div>
 </footer>
-<script>
-(function () {
-  var form = document.querySelector(".waitlist-form");
-  if (!form) return;
-  form.addEventListener("submit", function (event) {
-    var desk = form.getAttribute("data-email") || "";
-    var who = (form.elements.name.value || "").trim();
-    var reply = (form.elements.email.value || "").trim();
-    var piece = (form.elements.piece.value || "").trim();
-    if (!desk || !who || !reply || !piece) return;
-    event.preventDefault();
-    var subject = form.getAttribute("data-subject") || "Stranger Thoughts waitlist";
-    var body = [
-      "Name: " + who,
-      "Email: " + reply,
-      "",
-      "What I would send:",
-      piece,
-      "",
-      "I understand this is a waitlist. The desk is not accepting paid work yet."
-    ].join("\n");
-    window.location.href = "mailto:" + desk
-      + "?subject=" + encodeURIComponent(subject)
-      + "&body=" + encodeURIComponent(body);
-  });
-})();
-</script>
-
 </body>
 </html>
