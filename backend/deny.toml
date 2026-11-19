@@ -1,9 +1,15 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # Unmaintained, not a vulnerability. Timestamps stay on chrono until a
+  # later change moves them to jiff. There is no patched chrono release.
+  "RUSTSEC-2026-0543",
+]
 
 [licenses]
 version = 2
+private = { ignore = true }
 allow = [
   "Apache-2.0",
   "MIT",

@@ -189,6 +189,8 @@ When an account exists, before real personal information:
 - WAF is on unless `-c enableWaf=false`. The common rule group can be sensitive to body patterns. Address bodies are small and go to the API, which is behind the same distribution. If a real address is blocked, note the sampled request before loosening a rule.
 - The ActiveReaders index uses one partition key, `ACTIVE`. That is acceptable at the size in `docs/DEPLOY.md`. It is the wrong shape for a very large reader pool.
 - Dependabot watches Cargo (`/backend`), npm (`/infra`), and GitHub Actions. CI runs tests, clippy, `cargo deny`, the CDK policy tests, synth, and the frontend checks.
+- The AWS SDK features are `default-https-client`, which uses current rustls. The SDK feature named `rustls` still selects the legacy 0.21 client, so it is not enabled.
+- `cargo deny` ignores `RUSTSEC-2026-0543` only. That advisory says chrono is unmaintained, and there is no patched release. Timestamps stay on chrono until they move to another crate. It is not a vulnerability exception.
 
 ## What is intentionally not live
 

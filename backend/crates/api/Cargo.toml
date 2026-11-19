@@ -6,11 +6,11 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-aws-config = { version = "1.13", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls", "sso"] }
-aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
-aws-sdk-dynamodb = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
-aws-sdk-kms = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
-aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+aws-config = { version = "1.13", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client", "sso"] }
+aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+aws-sdk-kms = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 base64 = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
@@ -20,7 +20,7 @@ rand = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-stranger-domain = { path = "../domain" }
+stranger-domain = { version = "0.1.0", path = "../domain" }
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
