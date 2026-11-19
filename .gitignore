@@ -10,3 +10,6 @@ __pycache__/
 .Python
 .venv/
 venv/
+target/
+cdk.out/
+.cdk.staging/

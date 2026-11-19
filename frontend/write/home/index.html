@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="noindex">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com https://connect.stripe.com">
+  <title>Your stranger — Stranger Thoughts</title>
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../css/app.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <div class="page wide">
+    <header class="top">
+      <a class="brand" href="../../"><span>Stranger</span> <em>Thoughts</em></a>
+    </header>
+    <main id="content" class="split">
+      <section>
+        <p class="kicker">Your stranger</p>
+        <h1 id="stranger-name">Cedar</h1>
+        <div class="address" id="address"></div>
+        <button class="btn btn-primary" id="rotate" type="button">Rotate to a new stranger</button>
+        <p class="status" data-status></p>
+        <h2>My letters</h2>
+        <ul class="letters" id="letters"></ul>
+      </section>
+      <section>
+        <h2>How to send a letter</h2>
+        <ul class="materials">
+          <li>Plain paper.</li>
+          <li>A pen that will not bleed through.</li>
+          <li>A standard envelope and a stamp.</li>
+          <li>A PO box or virtual mailbox as the return address.</li>
+          <li>Never a home address.</li>
+        </ul>
+        <p class="quiet">The address on this page is for the letter you are sending now. Older matches stay in the log as a name, a date, and whether you sent it.</p>
+      </section>
+    </main>
+  </div>
+  <script src="../../js/config.js"></script>
+  <script type="module" src="../../js/pages/writer-home.js"></script>
+</body>
+</html>

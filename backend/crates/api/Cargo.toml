@@ -1,0 +1,64 @@
+[package]
+name = "stranger-api"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aws-config = { version = "1.13", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls", "sso"] }
+aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+aws-sdk-kms = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+base64 = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+lambda_http = { version = "1.3", default-features = false, features = ["apigw_http"] }
+lambda_runtime = "1.5"
+rand = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+stranger-domain = { path = "../domain" }
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std"] }
+uuid = { workspace = true }
+
+[[bin]]
+name = "health"
+path = "src/bin/health.rs"
+
+[[bin]]
+name = "profile"
+path = "src/bin/profile.rs"
+
+[[bin]]
+name = "matching"
+path = "src/bin/matching.rs"
+
+[[bin]]
+name = "address"
+path = "src/bin/address.rs"
+
+[[bin]]
+name = "payments"
+path = "src/bin/payments.rs"
+
+[[bin]]
+name = "webhook"
+path = "src/bin/webhook.rs"
+
+[[bin]]
+name = "account"
+path = "src/bin/account.rs"
+
+[[bin]]
+name = "post_confirmation"
+path = "src/bin/post_confirmation.rs"
+
+[[bin]]
+name = "pre_token"
+path = "src/bin/pre_token.rs"

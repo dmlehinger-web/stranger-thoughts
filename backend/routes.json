@@ -1,0 +1,22 @@
+{
+  "public": [
+    { "method": "GET", "path": "/health" },
+    { "method": "POST", "path": "/webhooks/stripe" }
+  ],
+  "authenticated": [
+    { "method": "POST", "path": "/writers/profile" },
+    { "method": "PUT", "path": "/writers/demographics" },
+    { "method": "DELETE", "path": "/writers/demographics" },
+    { "method": "GET", "path": "/writers/home" },
+    { "method": "POST", "path": "/writers/rotate" },
+    { "method": "POST", "path": "/matches/{matchId}/sent" },
+    { "method": "GET", "path": "/matches/{matchId}/address" },
+    { "method": "POST", "path": "/readers/profile" },
+    { "method": "GET", "path": "/readers/home" },
+    { "method": "POST", "path": "/readers/payouts/link" },
+    { "method": "POST", "path": "/readers/reports" },
+    { "method": "POST", "path": "/tips/reader" },
+    { "method": "POST", "path": "/tips/builder" },
+    { "method": "DELETE", "path": "/account" }
+  ]
+}

@@ -94,6 +94,25 @@ The build refuses a `CNAME` file while `domain_status` is `not_live`. It also re
 - An X account. About and How it works say a brand account is coming. They do not invent a handle.
 - Analytics, affiliate IDs, and secrets. `.gitignore` ignores `.env` and `.env.*`.
 
+## Version 2, not deployed
+
+The waitlist above is unchanged. Version 2 lives beside it and is not deployed:
+
+- `frontend/` — static pages. The committed config is mock mode, so the pages can be previewed without AWS. They are `noindex`. They do not change the waitlist stylesheet or its Content-Security-Policy.
+- `backend/` — Rust workspace. `cargo test` and `cargo clippy -D warnings` run locally.
+- `infra/` — AWS CDK. `npm test` synthesizes the stack and checks the policies. `npm run deploy` refuses to deploy.
+- `docs/DEPLOY.md` — what the owner has to provide before a first deploy.
+- `docs/SECURITY-REVIEW.md` — data inventory, trust boundaries, IAM, threats, and the verification checklist.
+- `docs/PRIVACY.md` and `docs/TERMS.md` — drafts. The same drafts are linked from the v2 pages.
+
+Local preview of the v2 screens:
+
+```bash
+python3 frontend/devserver.py
+```
+
+Open `http://127.0.0.1:8080/`. Nothing in this repository calls AWS or Stripe.
+
 ## Add a thought
 
 The recipe is in [CONTRIBUTING.md](CONTRIBUTING.md). Short version: copy `data/posts/_template.json`, fill it, run `python3 scripts/build.py`, and commit the JSON plus the generated HTML.

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="noindex">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com https://connect.stripe.com">
+  <title>Stranger Thoughts</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <div class="page">
+    <header class="top">
+      <a class="brand" href="./"><span>Stranger</span> <em>Thoughts</em></a>
+    </header>
+    <main id="content">
+      <h1>Someone will read you, and write back by hand.</h1>
+      <p class="lede">A quiet place to send a letter to a stranger, and to be the stranger who replies.</p>
+      <div class="stack">
+        <a class="btn btn-primary" href="write/">I want to write</a>
+        <a class="btn btn-secondary" href="read/">I want to read and reply</a>
+      </div>
+      <hr class="rule">
+      <p class="quiet">If this place has been useful, you can leave a tip for the people who keep it running. Pay what you think this is worth.</p>
+      <button class="text-link" type="button" data-tip="builder">Leave a tip</button>
+      <p class="hint"><a href="privacy/">Privacy</a> · <a href="terms/">Terms</a></p>
+    </main>
+  </div>
+  <script src="js/config.js"></script>
+  <script type="module" src="js/pages/landing.js"></script>
+</body>
+</html>
