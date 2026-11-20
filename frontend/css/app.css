@@ -438,6 +438,35 @@ select {
   font-size: 0.95rem;
 }
 
+.standard,
+.prompt,
+.account,
+.preserve,
+.colophon {
+  margin-top: 1.5rem;
+}
+
+.transit {
+  color: var(--muted);
+  margin: 0.2rem 0 0;
+}
+
+.colophon {
+  font-family: var(--serif);
+  font-style: italic;
+}
+
+.preserve summary {
+  cursor: pointer;
+}
+
+.letter .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
 .prose {
   max-width: 38rem;
 }

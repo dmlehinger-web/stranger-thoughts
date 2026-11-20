@@ -16,9 +16,9 @@ function seed() {
     blocked: [],
     rotatesToday: 1,
     letters: [
-      { id: "m-cedar", readerId: "reader-cedar", reader: "Cedar", writer: "North Window", matchedAt: "2026-11-12", sent: false, current: true },
-      { id: "m-harbor", readerId: "reader-harbor", reader: "Harbor", writer: "North Window", matchedAt: "2026-11-03", sent: true, current: false },
-      { id: "m-moth", readerId: "reader-moth", reader: "Moth", writer: "North Window", matchedAt: "2026-10-21", sent: true, current: false },
+      { id: "m-cedar", readerId: "reader-cedar", reader: "Cedar", writer: "North Window", matchedAt: "2026-11-12", sent: false, current: true, turns: [] },
+      { id: "m-harbor", readerId: "reader-harbor", reader: "Harbor", writer: "North Window", matchedAt: "2026-11-03", sent: true, current: false, turns: [{ sequence: 1, direction: "writer_to_reader", mailedOn: "2026-11-04", receivedOn: "2026-11-09" }] },
+      { id: "m-moth", readerId: "reader-moth", reader: "Moth", writer: "North Window", matchedAt: "2026-10-21", sent: true, current: false, turns: [{ sequence: 1, direction: "writer_to_reader", mailedOn: "2026-10-22", receivedOn: null }] },
     ],
     expected: [
       { id: "m-cedar", writer: "North Window", matchedAt: "2026-11-12" },
@@ -27,13 +27,22 @@ function seed() {
     ],
     tips: [],
     builderCents: 0,
+    mailAlerts: true,
+    copies: [],
   };
 }
 
 function load() {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || "null");
-    if (saved && Array.isArray(saved.letters)) return saved;
+    if (saved && Array.isArray(saved.letters)) {
+      if (typeof saved.mailAlerts !== "boolean") saved.mailAlerts = true;
+      if (!Array.isArray(saved.copies)) saved.copies = [];
+      for (const letter of saved.letters) {
+        if (!Array.isArray(letter.turns)) letter.turns = [];
+      }
+      return saved;
+    }
   } catch {
     /* start fresh */
   }
@@ -53,6 +62,35 @@ function formatDate(iso) {
   return `${names[month - 1]} ${day}, ${year}`;
 }
 
+function exchange(role, turns) {
+  const last = turns[turns.length - 1];
+  if (!last) {
+    return {
+      status: "Not mailed yet",
+      actions: role === "writer" ? ["mark_mailed"] : [],
+      sent: false,
+    };
+  }
+  const status = last.receivedOn
+    ? `Received · marked received ${last.receivedOn}`
+    : `In transit · marked mailed ${last.mailedOn}`;
+  let actions = [];
+  if (!last.receivedOn) {
+    const recipient = last.direction === "writer_to_reader" ? "reader" : "writer";
+    if (role === recipient) actions = ["mark_received"];
+  } else {
+    const next = last.direction === "writer_to_reader" ? "reader" : "writer";
+    if (role === next && turns.length < 30) {
+      actions = [role === "reader" ? "mark_reply_mailed" : "mark_mailed"];
+    }
+  }
+  return {
+    status,
+    actions,
+    sent: turns.some((turn) => turn.direction === "writer_to_reader"),
+  };
+}
+
 function homeBody(state) {
   const current = state.letters.find((letter) => letter.current) || null;
   return {
@@ -60,12 +98,18 @@ function homeBody(state) {
     current: current
       ? { match_id: current.id, reader_pseudonym: current.reader, matched_at: current.matchedAt }
       : null,
-    letters: state.letters.map((letter) => ({
-      match_id: letter.id,
-      reader_pseudonym: letter.reader,
-      matched_at: letter.matchedAt,
-      sent: letter.sent,
-    })),
+    letters: state.letters.map((letter) => {
+      const view = exchange("writer", letter.turns || []);
+      return {
+        match_id: letter.id,
+        reader_pseudonym: letter.reader,
+        matched_at: letter.matchedAt,
+        sent: view.sent,
+        status: view.status,
+        actions: view.actions,
+        turns: [],
+      };
+    }),
   };
 }
 
@@ -85,17 +129,10 @@ export const mockApi = {
       error.code = "not_found";
       throw error;
     }
-    const reader = POOL.find((item) => item.id === current.readerId);
     return {
       match_id: current.id,
       reader_pseudonym: current.reader,
-      address: {
-        line1: reader.line1,
-        city: reader.city,
-        region: reader.region,
-        postal_code: reader.postal,
-        country: reader.country,
-      },
+      desk_ready: false,
     };
   },
   async saveWriter(pseudonym, demographics) {
@@ -135,6 +172,7 @@ export const mockApi = {
       matchedAt: "2026-11-19",
       sent: false,
       current: true,
+      turns: [],
     });
     state.rotatesToday += 1;
     save(state);
@@ -163,10 +201,87 @@ export const mockApi = {
     const received = state.tips.reduce((sum, tip) => sum + tip.amount_cents, 0);
     return {
       pseudonym: state.reader.pseudonym,
-      letters: state.expected,
+      letters: state.expected.map((letter) => {
+        const match = state.letters.find((item) => item.id === letter.id);
+        const view = exchange("reader", match?.turns || []);
+        return {
+          match_id: letter.id,
+          writer_pseudonym: letter.writer,
+          matched_at: letter.matchedAt,
+          status: view.status,
+          actions: view.actions,
+        };
+      }),
       tips_received_cents: 1800 + received,
       payouts_ready: state.reader.payoutsReady,
     };
+  },
+  async markMailed(matchId) {
+    const state = load();
+    const letter = state.letters.find((item) => item.id === matchId);
+    if (!letter) {
+      const error = new Error("not_found");
+      error.code = "not_found";
+      throw error;
+    }
+    letter.turns = letter.turns || [];
+    const last = letter.turns[letter.turns.length - 1];
+    if (!last || last.receivedOn) {
+      const direction = !last || last.direction === "reader_to_writer" ? "writer_to_reader" : "reader_to_writer";
+      letter.turns.push({
+        sequence: letter.turns.length + 1,
+        direction,
+        mailedOn: "2026-11-20",
+        receivedOn: null,
+      });
+      letter.sent = letter.turns.some((turn) => turn.direction === "writer_to_reader");
+    }
+    save(state);
+    return exchange("writer", letter.turns);
+  },
+  async markReceived(matchId) {
+    const state = load();
+    const letter = state.letters.find((item) => item.id === matchId);
+    const last = letter?.turns?.[letter.turns.length - 1];
+    if (!letter || !last || last.receivedOn) {
+      const error = new Error("not_found");
+      error.code = "not_found";
+      throw error;
+    }
+    last.receivedOn = "2026-11-20";
+    save(state);
+    return exchange("reader", letter.turns);
+  },
+  async settings() {
+    return { mail_alerts: load().mailAlerts !== false };
+  },
+  async saveSettings(mailAlerts) {
+    const state = load();
+    state.mailAlerts = Boolean(mailAlerts);
+    save(state);
+    return { mail_alerts: state.mailAlerts };
+  },
+  async savePrivate(matchId, body) {
+    if (!body || body.length > 4000 || body.includes("@")) {
+      const error = new Error("invalid_request");
+      error.code = "invalid_request";
+      throw error;
+    }
+    const state = load();
+    state.copies.push({ matchId, body, kind: "private" });
+    save(state);
+    return { saved: true, published: false };
+  },
+  async offerArchive(matchId, body) {
+    if (!body || body.length > 4000 || body.includes("@")) {
+      const error = new Error("invalid_request");
+      error.code = "invalid_request";
+      throw error;
+    }
+    const state = load();
+    state.copies.push({ matchId, body, kind: "archive" });
+    save(state);
+    return { saved: true, status: "pending", curated: false, published: false };
   },
   async tipReader(matchId, amountCents) {
     const state = load();

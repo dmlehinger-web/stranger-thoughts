@@ -62,6 +62,20 @@ pub fn principal(request: &Request) -> Result<Principal, ApiFailure> {
     authz::principal_from_claims(&claims).map_err(ApiFailure::from)
 }
 
+pub fn source_ip(request: &Request) -> String {
+    match request.request_context_ref() {
+        Some(RequestContext::ApiGatewayV2(context)) => context
+            .http
+            .source_ip
+            .as_deref()
+            .map(str::trim)
+            .filter(|ip| !ip.is_empty())
+            .unwrap_or("unknown")
+            .to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
 pub fn claim(request: &Request, name: &str) -> Option<String> {
     jwt_claims(request)?.get(name).cloned()
 }

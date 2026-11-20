@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use crate::correspondence::{self, Turn};
 use crate::ids::{MatchId, ReaderId, WriterId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,9 @@ pub struct LetterSummary {
     pub reader_pseudonym: String,
     pub matched_at: DateTime<Utc>,
     pub sent: bool,
+    pub status: String,
+    pub actions: Vec<String>,
+    pub turns: Vec<correspondence::TurnView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -47,6 +53,9 @@ pub struct ExpectedLetter {
     pub match_id: String,
     pub writer_pseudonym: String,
     pub matched_at: DateTime<Utc>,
+    pub status: String,
+    pub actions: Vec<String>,
+    pub turns: Vec<correspondence::TurnView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -57,22 +66,35 @@ pub struct ReaderHomeView {
     pub payouts_ready: bool,
 }
 
-pub fn letter_log(history: &[MatchRecord]) -> Vec<LetterSummary> {
+pub fn letter_log(history: &[MatchRecord], turns: &HashMap<String, Vec<Turn>>) -> Vec<LetterSummary> {
     let mut rows: Vec<LetterSummary> = history
         .iter()
-        .map(|record| LetterSummary {
-            match_id: record.match_id.as_str().to_string(),
-            reader_pseudonym: record.reader_pseudonym.clone(),
-            matched_at: record.matched_at,
-            sent: record.sent,
+        .map(|record| {
+            let exchange = correspondence::exchange_for(
+                crate::authz::Role::Writer,
+                turns.get(record.match_id.as_str()).map(Vec::as_slice).unwrap_or(&[]),
+            );
+            LetterSummary {
+                match_id: record.match_id.as_str().to_string(),
+                reader_pseudonym: record.reader_pseudonym.clone(),
+                matched_at: record.matched_at,
+                sent: exchange.sent,
+                status: exchange.status,
+                actions: exchange.actions,
+                turns: exchange.turns,
+            }
         })
         .collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.matched_at));
     rows
 }
 
-pub fn writer_home(pseudonym: &str, history: &[MatchRecord]) -> WriterHomeView {
-    let letters = letter_log(history);
+pub fn writer_home(
+    pseudonym: &str,
+    history: &[MatchRecord],
+    turns: &HashMap<String, Vec<Turn>>,
+) -> WriterHomeView {
+    let letters = letter_log(history, turns);
     let current = history.iter().find(|record| record.current).map(|record| {
         CurrentMatchView {
             match_id: record.match_id.as_str().to_string(),
@@ -87,13 +109,25 @@ pub fn writer_home(pseudonym: &str, history: &[MatchRecord]) -> WriterHomeView {
     }
 }
 
-pub fn reader_expectations(history: &[MatchRecord]) -> Vec<ExpectedLetter> {
+pub fn reader_expectations(
+    history: &[MatchRecord],
+    turns: &HashMap<String, Vec<Turn>>,
+) -> Vec<ExpectedLetter> {
     let mut rows: Vec<ExpectedLetter> = history
         .iter()
-        .map(|record| ExpectedLetter {
-            match_id: record.match_id.as_str().to_string(),
-            writer_pseudonym: record.writer_pseudonym.clone(),
-            matched_at: record.matched_at,
+        .map(|record| {
+            let exchange = correspondence::exchange_for(
+                crate::authz::Role::Reader,
+                turns.get(record.match_id.as_str()).map(Vec::as_slice).unwrap_or(&[]),
+            );
+            ExpectedLetter {
+                match_id: record.match_id.as_str().to_string(),
+                writer_pseudonym: record.writer_pseudonym.clone(),
+                matched_at: record.matched_at,
+                status: exchange.status,
+                actions: exchange.actions,
+                turns: exchange.turns,
+            }
         })
         .collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.matched_at));
@@ -141,7 +175,7 @@ mod tests {
 
     #[test]
     fn writer_home_json_has_no_address_or_email() {
-        let view = writer_home("North Window", &[sample()]);
+        let view = writer_home("North Window", &[sample()], &HashMap::new());
         let raw = serde_json::to_string(&view).unwrap();
         let value: Value = serde_json::from_str(&raw).unwrap();
         assert!(value.get("current").unwrap().get("reader_pseudonym").is_some());
@@ -151,5 +185,6 @@ mod tests {
         for banned in ["line1", "postal", "ciphertext", "email", "@", "address"] {
             assert!(!lowered.contains(banned), "{banned} leaked into {raw}");
         }
+        assert!(crate::redaction::find_pii_key(&value).is_none(), "{value}");
     }
 }

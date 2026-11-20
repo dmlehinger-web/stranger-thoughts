@@ -6,8 +6,13 @@
 mod aws;
 mod http;
 mod items;
+mod notify;
+mod preservation;
 mod store;
 mod triggers;
+
+pub use notify::handle_notify;
+pub use preservation::preservation;
 
 use std::collections::HashMap;
 
@@ -22,8 +27,12 @@ use stranger_domain::checkout::{
     account_link_form, checkout_form, enforce_stripe_mode, express_account_form, live_gate_open,
     CheckoutPlan, STRIPE_ACCOUNT_LINK_URL, STRIPE_ACCOUNT_URL, STRIPE_CHECKOUT_URL,
 };
+use stranger_domain::correspondence::{self, MarkResult};
 use stranger_domain::ids::{MatchId, ReaderId, WriterId};
 use stranger_domain::model::{reader_expectations, writer_home, ReaderHomeView};
+use stranger_domain::preferences::MailAlertPreference;
+use stranger_domain::validation::MailAlertsRequest;
+use stranger_domain::DEFAULT_MAX_MAIL_MARKS_PER_DAY;
 use stranger_domain::rate_limit::RateLimitError;
 use stranger_domain::redaction::SafeLog;
 use stranger_domain::reports::{self, authorize_report};
@@ -51,7 +60,20 @@ pub fn init_tracing() {
         .try_init();
 }
 
-pub async fn health(_request: Request) -> Result<Response<Body>, lambda_http::Error> {
+pub async fn health(request: Request) -> Result<Response<Body>, lambda_http::Error> {
+    let response = match health_inner(&request).await {
+        Ok(response) => response,
+        Err(error) => failure(&error),
+    };
+    Ok(response)
+}
+
+async fn health_inner(request: &Request) -> Result<Response<Body>, ApiFailure> {
+    let subject = stranger_domain::rate_limit::hash_subject("health", &http::source_ip(request));
+    store()
+        .await?
+        .bump_limit(&subject, Utc::now(), 60, chrono::Duration::minutes(10))
+        .await?;
     Ok(json_response(200, &json!({"ok": true})))
 }
 
@@ -124,15 +146,24 @@ pub async fn matching(request: Request) -> Result<Response<Body>, lambda_http::E
 async fn matching_inner(request: &Request) -> Result<Response<Body>, ApiFailure> {
     let principal = http::principal(request)?;
     authz::require_verified(&principal)?;
-    authz::require_role(&principal, Role::Writer)?;
-    let writer = authz::writer_id(&principal)?;
     let store = store().await?;
     let method = request.method().as_str();
     let path = request.uri().path();
+    if method == "POST" && (path.ends_with("/mailed") || path.ends_with("/received")) {
+        let kind = if path.ends_with("/received") { "received" } else { "mailed" };
+        let match_id = path
+            .strip_prefix("/matches/")
+            .and_then(|rest| rest.strip_suffix(if kind == "received" { "/received" } else { "/mailed" }))
+            .ok_or(ApiFailure::NotFound)?;
+        return mail_action(principal, &store, match_id, kind).await;
+    }
+    authz::require_role(&principal, Role::Writer)?;
+    let writer = authz::writer_id(&principal)?;
     if method == "GET" && path == "/writers/home" {
         let profile = store.writer_pseudonym(writer.as_str()).await?;
         let history = store.matches_for_writer(&writer).await?;
-        let view = writer_home(&profile, &history);
+        let turns = store.turns_for_matches(&history.iter().map(|record| record.match_id.clone()).collect::<Vec<_>>()).await?;
+        let view = writer_home(&profile, &history, &turns);
         return Ok(json_response(200, &view));
     }
     if method == "POST" && path == "/writers/rotate" {
@@ -155,7 +186,16 @@ async fn matching_inner(request: &Request) -> Result<Response<Body>, ApiFailure>
         )?;
         let previous = history.iter().find(|record| record.current);
         store.save_rotation(previous, &outcome.created).await?;
-        let view = writer_home(&profile, &outcome.history);
+        let turns = store
+            .turns_for_matches(
+                &outcome
+                    .history
+                    .iter()
+                    .map(|record| record.match_id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let view = writer_home(&profile, &outcome.history, &turns);
         return Ok(json_response(200, &view));
     }
     if method == "POST" {
@@ -201,6 +241,20 @@ async fn address_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
     let writer = authz::writer_id(&principal)?;
     let history = store.matches_for_writer(&writer).await?;
     let grant = authz::authorize_address_read(&principal, &match_id, &history)?;
+    let record = history
+        .iter()
+        .find(|record| record.match_id == grant.match_id)
+        .ok_or(ApiFailure::NotFound)?;
+    if std::env::var("MAILING_DESK_READY").ok().as_deref() != Some("true") {
+        return Ok(json_response(
+            200,
+            &json!({
+                "match_id": record.match_id.as_str(),
+                "reader_pseudonym": record.reader_pseudonym,
+                "desk_ready": false,
+            }),
+        ));
+    }
     let max = env_u32("MAX_ADDRESS_READS_PER_DAY", DEFAULT_MAX_ADDRESS_READS_PER_DAY);
     store.bump_address_reads(writer.as_str(), Utc::now(), max).await?;
     let sealed = store
@@ -236,7 +290,7 @@ async fn payments_inner(request: &Request) -> Result<Response<Body>, ApiFailure>
     authz::require_verified(&principal)?;
     let store = store().await?;
     let aws = Aws::get().await?;
-    let secret = stripe_secret(aws, "STRIPE_SECRET_ID", "secret_key").await?;
+    let secret = stripe_parameter(aws, "STRIPE_API_KEY_PARAMETER").await?;
     let allow_live = live_gate_open(std::env::var("STRIPE_ALLOW_LIVE").ok().as_deref());
     enforce_stripe_mode(&secret, allow_live)?;
     let app_base = std::env::var("APP_BASE_URL").map_err(|_| ApiFailure::Invalid)?;
@@ -328,12 +382,7 @@ async fn payments_inner(request: &Request) -> Result<Response<Body>, ApiFailure>
         )?;
         let session = stripe_post(aws, &secret, STRIPE_CHECKOUT_URL, &fields).await?;
         let url = hosted_url(&session, "https://checkout.stripe.com/")?;
-        let session_id = session
-            .get("id")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_string();
-        if !session_id.is_empty() {
+        if let Some(session_id) = checkout_session_id(&session) {
             store.set_checkout_session(&tip_id, &session_id).await?;
         }
         return Ok(json_response(200, &json!({"url": url})));
@@ -348,7 +397,7 @@ async fn payments_inner(request: &Request) -> Result<Response<Body>, ApiFailure>
         let back = format!("{}/", app_base.trim_end_matches('/'));
         let fields = checkout_form(
             &CheckoutPlan {
-                tip_id,
+                tip_id: tip_id.clone(),
                 user_id: routed.user_id,
                 amount_cents: routed.amount_cents,
                 kind: TipKind::Builder,
@@ -362,6 +411,9 @@ async fn payments_inner(request: &Request) -> Result<Response<Body>, ApiFailure>
         )?;
         let session = stripe_post(aws, &secret, STRIPE_CHECKOUT_URL, &fields).await?;
         let url = hosted_url(&session, "https://checkout.stripe.com/")?;
+        if let Some(session_id) = checkout_session_id(&session) {
+            store.set_checkout_session(&tip_id, &session_id).await?;
+        }
         return Ok(json_response(200, &json!({"url": url})));
     }
     Err(ApiFailure::NotFound)
@@ -383,6 +435,11 @@ async fn webhook_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
     if request.method() != Method::POST || request.uri().path() != "/webhooks/stripe" {
         return Err(ApiFailure::NotFound);
     }
+    let subject = stranger_domain::rate_limit::hash_subject("webhook", &http::source_ip(request));
+    store()
+        .await?
+        .bump_limit(&subject, Utc::now(), 300, chrono::Duration::minutes(10))
+        .await?;
     let bytes = http::body_bytes(request.body());
     if bytes.len() > 64 * 1024 {
         return Err(ApiFailure::BodyTooLarge);
@@ -393,7 +450,7 @@ async fn webhook_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
     let aws = Aws::get().await?;
-    let secret = stripe_secret(aws, "STRIPE_WEBHOOK_SECRET_ID", "webhook_secret").await?;
+    let secret = stripe_parameter(aws, "STRIPE_WEBHOOK_SECRET_PARAMETER").await?;
     stranger_domain::webhook::verify_stripe_signature(
         &secret,
         header,
@@ -406,16 +463,36 @@ async fn webhook_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
     if !store.claim_stripe_event(&event.id).await? {
         return Ok(json_response(200, &json!({"duplicate": true})));
     }
-    match event.action {
+    let write = match &event.action {
         stranger_domain::webhook::WebhookAction::MarkTipPaid { tip_id, session_id } => {
-            store.mark_tip_paid(&tip_id, &session_id).await?;
+            match store.mark_tip_paid(tip_id, session_id).await {
+                Ok(()) => stranger_domain::webhook::ClaimedWrite::Done,
+                Err(store::TipUpdateError::Conflict) => stranger_domain::webhook::ClaimedWrite::Conflict,
+                Err(store::TipUpdateError::Transient) => stranger_domain::webhook::ClaimedWrite::Transient,
+            }
         }
         stranger_domain::webhook::WebhookAction::UpdatePayouts { reader_id, ready } => {
-            store.set_payouts_ready(&reader_id, ready).await?;
+            match store.set_payouts_ready(reader_id, *ready).await {
+                Ok(()) => stranger_domain::webhook::ClaimedWrite::Done,
+                Err(_) => stranger_domain::webhook::ClaimedWrite::Transient,
+            }
         }
-        stranger_domain::webhook::WebhookAction::Ignore => {}
+        stranger_domain::webhook::WebhookAction::Ignore => stranger_domain::webhook::ClaimedWrite::Done,
+    };
+    let disposition = stranger_domain::webhook::disposition_after_claim(write);
+    if matches!(write, stranger_domain::webhook::ClaimedWrite::Conflict) {
+        let log = SafeLog::new("tip update conflict").field("event_id", &event.id);
+        tracing::warn!("{}", serde_json::to_string(&log).unwrap_or_else(|_| "{}".into()));
     }
-    Ok(json_response(200, &json!({"received": true})))
+    if disposition.release_claim {
+        let _ = store.release_stripe_event(&event.id).await;
+    }
+    let body = if disposition.status == 503 {
+        json!({"error": "retry"})
+    } else {
+        json!({"received": true})
+    };
+    Ok(json_response(disposition.status, &body))
 }
 
 pub async fn account(request: Request) -> Result<Response<Body>, lambda_http::Error> {
@@ -433,6 +510,27 @@ async fn account_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
     let store = store().await?;
     let method = request.method().as_str();
     let path = request.uri().path();
+    if path == "/account/settings" {
+        return match method {
+            "GET" => {
+                let enabled = store.mail_alerts_enabled(principal.role, &principal.user_id).await?;
+                Ok(json_response(200, &MailAlertPreference { mail_alerts: enabled }))
+            }
+            "PUT" => {
+                let body: MailAlertsRequest = parse_json(request)?;
+                store
+                    .set_mail_alerts(principal.role, &principal.user_id, body.mail_alerts)
+                    .await?;
+                Ok(json_response(
+                    200,
+                    &MailAlertPreference {
+                        mail_alerts: body.mail_alerts,
+                    },
+                ))
+            }
+            _ => Err(ApiFailure::NotFound),
+        };
+    }
     if method == "GET" && path == "/readers/home" {
         authz::require_role(&principal, Role::Reader)?;
         let reader = authz::reader_id(&principal)?;
@@ -441,10 +539,13 @@ async fn account_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
             .await?
             .ok_or(ApiFailure::NotFound)?;
         let history = store.matches_for_reader(&reader).await?;
+        let turns = store
+            .turns_for_matches(&history.iter().map(|record| record.match_id.clone()).collect::<Vec<_>>())
+            .await?;
         let tips = store.tips_received_cents(reader.as_str()).await?;
         let view = ReaderHomeView {
             pseudonym: profile.pseudonym,
-            letters: reader_expectations(&history),
+            letters: reader_expectations(&history, &turns),
             tips_received_cents: tips,
             payouts_ready: profile.payouts_ready,
         };
@@ -489,6 +590,7 @@ async fn account_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
             }
         }
         if plan.delete_profile {
+            store.delete_owner_preservation(&principal.user_id).await?;
             store.delete_profile(&principal.user_id, principal.role).await?;
         }
         let pool = std::env::var("USER_POOL_ID").map_err(|_| ApiFailure::Invalid)?;
@@ -521,7 +623,15 @@ pub fn handle_pre_token(event: serde_json::Value) -> serde_json::Value {
     triggers::shape_token(event)
 }
 
-fn noted(path: &str, response: Response<Body>) -> Response<Body> {
+pub(crate) fn checkout_session_id(session: &serde_json::Value) -> Option<String> {
+    session
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+pub(crate) fn noted(path: &str, response: Response<Body>) -> Response<Body> {
     let status = response.status().as_u16();
     let log = SafeLog::new("handled")
         .field("path", path)
@@ -530,13 +640,13 @@ fn noted(path: &str, response: Response<Body>) -> Response<Body> {
     response
 }
 
-fn parse_json<T: serde::de::DeserializeOwned>(request: &Request) -> Result<T, ApiFailure> {
+pub(crate) fn parse_json<T: serde::de::DeserializeOwned>(request: &Request) -> Result<T, ApiFailure> {
     let bytes = http::body_bytes(request.body());
     check_body_len(bytes.len())?;
     serde_json::from_slice(bytes).map_err(|_| ApiFailure::Invalid)
 }
 
-async fn store() -> Result<Store, ApiFailure> {
+pub(crate) async fn store() -> Result<Store, ApiFailure> {
     let aws = Aws::get().await?;
     Ok(Store::from_env(aws.dynamo.clone()))
 }
@@ -590,22 +700,136 @@ async fn unseal(
     open_address(reader, sealed, &data_key).map_err(|_| ApiFailure::Invalid)
 }
 
-async fn stripe_secret(aws: &Aws, env_name: &str, field: &str) -> Result<String, ApiFailure> {
-    let secret_id = std::env::var(env_name).map_err(|_| ApiFailure::Invalid)?;
-    let secret = aws
-        .secrets
-        .get_secret_value()
-        .secret_id(secret_id)
+async fn stripe_parameter(aws: &Aws, env_name: &str) -> Result<String, ApiFailure> {
+    let name = std::env::var(env_name).map_err(|_| ApiFailure::Invalid)?;
+    if name != "/st/stripe/api-key" && name != "/st/stripe/webhook-secret" {
+        return Err(ApiFailure::Invalid);
+    }
+    let output = aws
+        .ssm
+        .get_parameter()
+        .name(name)
+        .with_decryption(true)
         .send()
         .await
         .map_err(|_| ApiFailure::Invalid)?;
-    let raw = secret.secret_string().ok_or(ApiFailure::Invalid)?;
+    let raw = output
+        .parameter()
+        .and_then(|parameter| parameter.value())
+        .ok_or(ApiFailure::Invalid)?;
+    if raw.contains('\n') || raw.contains('\r') {
+        return Err(ApiFailure::Invalid);
+    }
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) {
-        if let Some(value) = parsed.get(field).and_then(|item| item.as_str()) {
-            return Ok(value.to_string());
+        for key in ["api_key", "secret_key", "webhook_secret"] {
+            if let Some(value) = parsed.get(key).and_then(|item| item.as_str()) {
+                return Ok(value.trim().to_string());
+            }
+        }
+        return Err(ApiFailure::Invalid);
+    }
+    Ok(raw.trim().to_string())
+}
+
+async fn mail_action(
+    principal: stranger_domain::authz::Principal,
+    store: &Store,
+    match_id: &str,
+    kind: &str,
+) -> Result<Response<Body>, ApiFailure> {
+    let match_id = MatchId::new(match_id).map_err(|_| ApiFailure::NotFound)?;
+    let history = match principal.role {
+        Role::Writer => {
+            let writer = WriterId::new(principal.user_id.clone()).map_err(|_| ApiFailure::Invalid)?;
+            store.matches_for_writer(&writer).await?
+        }
+        Role::Reader => {
+            let reader = ReaderId::new(principal.user_id.clone()).map_err(|_| ApiFailure::Invalid)?;
+            store.matches_for_reader(&reader).await?
+        }
+    };
+    let record = history
+        .iter()
+        .find(|record| record.match_id == match_id)
+        .ok_or(ApiFailure::NotFound)?;
+    let mut turns = store.turns_for_match(&match_id).await?;
+    let now = Utc::now();
+    if kind == "received" {
+        match correspondence::mark_received(principal.role, &turns, now)? {
+            MarkResult::Received(turn) => {
+                let subject = stranger_domain::rate_limit::hash_subject("mail", &principal.user_id);
+                store
+                    .bump_limit(&subject, now, DEFAULT_MAX_MAIL_MARKS_PER_DAY, chrono::Duration::hours(24))
+                    .await?;
+                if store.mark_turn_received(&match_id, turn.sequence, now).await? {
+                    if let Some(slot) = turns.iter_mut().find(|item| item.sequence == turn.sequence) {
+                        slot.received_at = Some(now);
+                    }
+                }
+            }
+            MarkResult::AlreadyReceived(_) => {}
+            MarkResult::Created(_) | MarkResult::AlreadyMailed(_) => return Err(ApiFailure::Invalid),
+        }
+    } else {
+        let turn_id = Uuid::new_v4().to_string();
+        match correspondence::mark_mailed(principal.role, &turns, now, &turn_id)? {
+            MarkResult::Created(turn) => {
+                let subject = stranger_domain::rate_limit::hash_subject("mail", &principal.user_id);
+                store
+                    .bump_limit(&subject, now, DEFAULT_MAX_MAIL_MARKS_PER_DAY, chrono::Duration::hours(24))
+                    .await?;
+                if store.put_turn_if_absent(&match_id, &turn).await? {
+                    let recipient_role = correspondence::recipient(turn.direction);
+                    let recipient_id = match recipient_role {
+                        Role::Writer => record.writer_id.as_str(),
+                        Role::Reader => record.reader_id.as_str(),
+                    };
+                    let notice_kind = match turn.direction {
+                        correspondence::Direction::WriterToReader => "letter",
+                        correspondence::Direction::ReaderToWriter => "reply",
+                    };
+                    let _ = invoke_notice(recipient_id, recipient_role, notice_kind, &turn, match_id.as_str()).await;
+                    turns.push(turn);
+                }
+            }
+            MarkResult::AlreadyMailed(_) => {}
+            MarkResult::Received(_) | MarkResult::AlreadyReceived(_) => return Err(ApiFailure::Invalid),
         }
     }
-    Err(ApiFailure::Invalid)
+    let exchange = correspondence::exchange_for(principal.role, &turns);
+    Ok(json_response(200, &exchange))
+}
+
+async fn invoke_notice(
+    recipient_id: &str,
+    role: Role,
+    kind: &str,
+    turn: &stranger_domain::correspondence::Turn,
+    match_id: &str,
+) -> Result<(), ApiFailure> {
+    let name = std::env::var("NOTIFY_FUNCTION_NAME").unwrap_or_default();
+    if name.is_empty() {
+        return Ok(());
+    }
+    let payload = json!({
+        "recipient_sub": recipient_id,
+        "recipient_role": match role { Role::Writer => "writer", Role::Reader => "reader" },
+        "kind": kind,
+        "turn_id": turn.turn_id,
+        "match_id": match_id,
+        "sequence": turn.sequence,
+    });
+    let bytes = serde_json::to_vec(&payload).map_err(|_| ApiFailure::Invalid)?;
+    let aws = Aws::get().await?;
+    let _ = aws
+        .lambda
+        .invoke()
+        .function_name(name)
+        .invocation_type(aws_sdk_lambda::types::InvocationType::Event)
+        .payload(aws_sdk_lambda::primitives::Blob::new(bytes))
+        .send()
+        .await;
+    Ok(())
 }
 
 async fn stripe_post(
@@ -672,6 +896,16 @@ impl From<stranger_domain::validation::ValidationError> for ApiFailure {
     }
 }
 
+impl From<stranger_domain::correspondence::CorrespondenceError> for ApiFailure {
+    fn from(value: stranger_domain::correspondence::CorrespondenceError) -> Self {
+        match value {
+            stranger_domain::correspondence::CorrespondenceError::Full => ApiFailure::RateLimited,
+            stranger_domain::correspondence::CorrespondenceError::NotYourTurn
+            | stranger_domain::correspondence::CorrespondenceError::Waiting => ApiFailure::NotFound,
+        }
+    }
+}
+
 impl From<stranger_domain::rotate::RotateError> for ApiFailure {
     fn from(value: stranger_domain::rotate::RotateError) -> Self {
         match value {
@@ -729,6 +963,59 @@ impl From<RateLimitError> for ApiFailure {
 impl From<store::StoreError> for ApiFailure {
     fn from(_: store::StoreError) -> Self {
         ApiFailure::Invalid
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkout_session_id;
+    use crate::store::{classify_tip_update, tip_paid_condition_matches, TipUpdateError};
+    use stranger_domain::webhook::{disposition_after_claim, ClaimedWrite};
+
+    #[test]
+    fn builder_checkout_stores_the_session_mark_tip_paid_compares() {
+        let session = serde_json::json!({
+            "id": "cs_test_builder",
+            "url": "https://checkout.stripe.com/c/pay/cs_test_builder"
+        });
+        let stored = checkout_session_id(&session).expect("session id");
+        assert_eq!(stored, "cs_test_builder");
+        assert!(tip_paid_condition_matches(&stored, "cs_test_builder"));
+        assert!(!tip_paid_condition_matches(&stored, "cs_test_other"));
+        assert!(checkout_session_id(&serde_json::json!({"id": ""})).is_none());
+
+        let source = include_str!("lib.rs");
+        let builder = source
+            .split("path == \"/tips/builder\"")
+            .nth(1)
+            .expect("builder route");
+        let body = builder.split("Err(ApiFailure::NotFound)").next().unwrap();
+        assert!(
+            body.contains("set_checkout_session"),
+            "builder tips must store checkoutSessionId"
+        );
+    }
+
+    #[test]
+    fn webhook_keeps_the_claim_when_mark_tip_paid_conflicts() {
+        let write = match classify_tip_update(true) {
+            TipUpdateError::Conflict => ClaimedWrite::Conflict,
+            TipUpdateError::Transient => ClaimedWrite::Transient,
+        };
+        let disposition = disposition_after_claim(write);
+        assert_eq!(disposition.status, 200);
+        assert!(!disposition.release_claim);
+    }
+
+    #[test]
+    fn webhook_releases_the_claim_on_a_transient_tip_write() {
+        let write = match classify_tip_update(false) {
+            TipUpdateError::Conflict => ClaimedWrite::Conflict,
+            TipUpdateError::Transient => ClaimedWrite::Transient,
+        };
+        let disposition = disposition_after_claim(write);
+        assert_eq!(disposition.status, 503);
+        assert!(disposition.release_claim);
     }
 }
 

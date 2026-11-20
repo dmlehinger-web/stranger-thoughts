@@ -1,0 +1,12 @@
+title = "Stranger Thoughts"
+
+[allowlist]
+description = "Unit tests use these exact fake literals. A different secret in the same file is still a finding."
+regexes = [
+  '''sk_test_12345678''',
+  '''sk_live_12345678''',
+  '''rk_test_12345678''',
+  '''rk_live_12345678''',
+  '''sk_live_abcDEF123''',
+  '''whsec_test_secret_value''',
+]

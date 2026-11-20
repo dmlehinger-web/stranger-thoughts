@@ -10,7 +10,9 @@ aws-config = { version = "1.13", default-features = false, features = ["behavior
 aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 aws-sdk-kms = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
-aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+aws-sdk-lambda = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+aws-sdk-ses = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+aws-sdk-ssm = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 base64 = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
@@ -62,3 +64,11 @@ path = "src/bin/post_confirmation.rs"
 [[bin]]
 name = "pre_token"
 path = "src/bin/pre_token.rs"
+
+[[bin]]
+name = "preservation"
+path = "src/bin/preservation.rs"
+
+[[bin]]
+name = "notify"
+path = "src/bin/notify.rs"

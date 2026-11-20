@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="strict-origin-when-cross-origin">
-  <meta name="robots" content="noindex">
+  <meta name="robots" content="noindex, noarchive">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com https://connect.stripe.com">
   <title>Read — Stranger Thoughts</title>
   <link rel="icon" href="../favicon.svg" type="image/svg+xml">
@@ -19,7 +19,7 @@
     </header>
     <main id="content">
       <h1>A name, and a place the letter can land.</h1>
-      <p class="lede">Use a PO box or a virtual mailbox. A street address works, and we treat it as highly sensitive: only the writer matched to you right now can see it, and only for that match.</p>
+      <p class="lede">Use a PO box or a virtual mailbox. Mailing address coming soon: writers will not see a street address until a non-residential desk mailbox is ready. The email on this form is for account verification and mailed-letter alerts. It is never shown to a writer.</p>
       <form id="signup">
         <label for="pseudonym">Pseudonym</label>
         <input id="pseudonym" name="pseudonym" type="text" autocomplete="nickname" required maxlength="40" value="Cedar">
@@ -27,7 +27,7 @@
         <input id="email" name="email" type="email" autocomplete="email" required>
         <label for="password">Password</label>
         <input id="password" name="password" type="password" autocomplete="new-password" minlength="15" required>
-        <p class="hint">At least 15 characters. Confirm the email before the address is stored. Authenticator-app MFA is offered once the account exists, and is a good idea if you store a mailing address.</p>
+        <p class="hint">At least 15 characters. Confirm the email before the address is stored. That verified email is also used for a quiet mailed-letter alert, and it is never shown to a writer. You can turn the alert off later in account settings. Authenticator-app MFA is offered once the account exists, and is a good idea if you store a mailing address.</p>
         <label for="line1">Mailing address</label>
         <input id="line1" name="line1" type="text" autocomplete="address-line1" required maxlength="80" placeholder="PO Box">
         <label for="line2">Line 2</label>

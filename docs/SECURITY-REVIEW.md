@@ -8,7 +8,7 @@ The owner has approved two sensitive collections, and the schema keeps them: opt
 
 | Data | Why | Where | Who can read it |
 | --- | --- | --- | --- |
-| Email | Account recovery and the verification gate | Cognito only. The pre-token Lambda strips it from both tokens and from the event it returns | Cognito. API Lambdas do not store it and do not log it |
+| Email | Account verification and, unless opted out, a mailed-letter note | Cognito only. The pre-token Lambda strips it from both tokens. The notify Lambda reads it after the opt-out check and does not log it or return it | Cognito, and the notify Lambda at send time. No API view returns it |
 | Pseudonym | The name the other person sees | Users or Readers profile row | The account owner, and the person matched with them (the name only) |
 | Age range, region, race, economic status | Optional self-description. Not an input to matching | Separate attributes on the writer profile (`ageRange`, `locationBucket`, `race`, `economicStatus`) | The writer, via their own session. Readers never receive them. Matching reads the ActiveReaders index, which projects `pseudonym` and `blockedWriterIds` only |
 | Mailing address | So the current writer can send a letter | Readers table, sort key `ADDRESS`: `ciphertext`, `encryptedDataKey`, `nonce`. Plaintext is not stored | The address Lambda, after the app check, and only the writer whose match is current. Decrypt permission exists on that function alone |
@@ -16,7 +16,10 @@ The owner has approved two sensitive collections, and the schema keeps them: opt
 | Block list | A reader can refuse a writer | `blockedWriterIds` on the reader profile | Used as a safety filter before the random draw. It is not a demographic |
 | Stripe connected account id | Route a tip to the matched reader | Readers profile, `stripeAccountId` | Payments Lambda, by a projected read. The browser never sends an account id |
 | Tip amount and status | Reconciliation | Tips table. Idempotency rows use `tipId = event#{id}` | The reader sees a total. The writer sees the Checkout redirect |
-| Rate counters | Cap address reads | Users sort key `RATE`: window start and count | The address Lambda |
+| Rate counters | Cap address reads, health, webhooks, mail marks, and preservation writes | RateLimits table. The subject is a kind plus a sha256, never a raw IP or an email. TTL on `ttl` | The function that enforces that limit |
+| Letter turns | “I mailed my letter”, “Mark letter received”, “Mark reply mailed” | Correspondence table: match id, sequence, direction, mailed time. No letter body, email, or address | The two people on that match. The status line has a date and no sender name or place |
+| Mail-alert preference | Let someone keep status on the page only | `mailAlerts` on the profile row. Missing means on | The account owner, via `GET /account/settings`, which returns only the boolean |
+| Private copy and archive offer | Optional, default off | Preservation table under the owner. `curated` stays false and `status` stays pending. Pair rows use owner id `PAIR` and are not returned | The owner sees their own text. The public site publishes only reviewed JSON in `data/archive/` |
 
 Age ranges are `18-24`, `25-34`, `35-44`, `45-54`, `55-64`, and `65+`. `under-13`, `0-12`, `13-17`, `child`, and similar buckets are rejected. The form does not offer them.
 
@@ -28,7 +31,7 @@ Street addresses are accepted because the owner asked for real mail. The product
 Browser (public SPA, PKCE, no client secret)
   |  HTTPS, TLS 1.2+ on the API origin
   v
-CloudFront  -- WAF (rate, common rules, known bad inputs)
+CloudFront  -- WAF off unless enableWaf and, for Bot Control, enableBotControl are both true
   |  OAC to a private S3 bucket     |  /api/* strips the prefix
   v                                 v
 S3 (static files)              API Gateway HTTP API
@@ -37,9 +40,10 @@ S3 (static files)              API Gateway HTTP API
                                Rust Lambdas (role checked again)
                                  |            |            |
                                  v            v            v
-                              DynamoDB     KMS CMK      Secrets Manager
-                              (ciphertext) (address     (Stripe test key,
-                                            data key)    webhook secret)
+                              DynamoDB     KMS CMK      SSM SecureString
+                              (ciphertext) (addresses,  (/st/stripe/api-key and
+                                            tables,      /st/stripe/webhook-secret;
+                                            SSM)         the stack does not create them)
 Cognito user pool  ---- groups writer | reader ----> Lambdas
 Stripe (hosted Checkout and Connect) -- signed webhook --> webhook Lambda
 ```
@@ -81,7 +85,7 @@ Address reveal, in `authorize_address_read`:
 - The match’s writer id is that caller.
 - The match is the current one.
 
-Anything else is `not_found`, including a historical match and a different writer, so the response is not an existence oracle. A reader principal cannot read an address. The address Lambda’s `GetItem` is limited to the address attributes and `Select = SPECIFIC_ATTRIBUTES`. No other function has `kms:Decrypt`. List responses (`WriterHomeView`, `LetterSummary`, `ReaderHomeView`) have no address, no email, and the writer home has no reader id.
+Anything else is `not_found`, including a historical match and a different writer, so the response is not an existence oracle. A reader principal cannot read an address. The address Lambda’s `GetItem` is limited to the address attributes and `Select = SPECIFIC_ATTRIBUTES`. No other function has `kms:Decrypt` without the SSM ViaService condition. List responses (`WriterHomeView`, `LetterSummary`, `ReaderHomeView`) have no address, no email, and the writer home has no reader id.
 
 Historical matches can still be tipped. The tip destination is the connected account stored for the match’s reader, loaded on the server. The request body has no reader id and no Stripe account field (`deny_unknown_fields`). A missing account is `payouts_unavailable`, with no fallback to another account.
 
@@ -96,9 +100,9 @@ JSON bodies are capped at 8 KB. Unknown fields are rejected. Error bodies are st
 
 ## Keys and retention
 
-The address key is a customer-managed CMK with rotation enabled, alias `alias/stranger-thoughts-${stage}-addresses`. The profile Lambda may call `kms:GenerateDataKey` on that key. The address Lambda may call `kms:Decrypt` on that key. No other function is granted decrypt. Envelope encryption is AES-256-GCM. The nonce is 12 bytes. The additional data is `st-address-v1:{readerId}`. The data key is wrapped by KMS with encryption context `purpose = reader-mailing-address` and `readerId`. The plaintext key is zeroized on drop. `PostalAddress`’s debug output is redacted.
+The app key is a customer-managed CMK with rotation enabled, alias `alias/st-<stage>`. It encrypts addresses, the DynamoDB tables, and the Stripe parameters. The profile Lambda may call `kms:GenerateDataKey`. The address Lambda may call `kms:Decrypt` without a ViaService condition. Payments and the webhook may decrypt only via SSM. Envelope encryption is AES-256-GCM. The nonce is 12 bytes. The additional data is `st-address-v1:{readerId}`. The data key is wrapped by KMS with encryption context `purpose = reader-mailing-address` and `readerId`. The plaintext key is zeroized on drop. `PostalAddress`’s debug output is redacted.
 
-Stripe secrets live in Secrets Manager under the AWS-managed `aws/secretsmanager` key. Callers need `secretsmanager:GetSecretValue` on that secret’s ARN. They do not need `kms:Decrypt`, which keeps the “address Lambda only” decrypt rule intact. The placeholder value is the string `replace-me`. Templates do not contain `sk_test_`, `sk_live_`, or `whsec_`.
+Stripe keys live in SSM SecureString parameters `/st/stripe/api-key` and `/st/stripe/webhook-secret`, encrypted with the app key `alias/st-<stage>`. The stack does not create or write those parameters. Payments and the webhook may `ssm:GetParameter` on those two ARNs and `kms:Decrypt` only with `kms:ViaService` set to `ssm.us-east-1.amazonaws.com`. The address Lambda’s decrypt has no ViaService condition. Templates do not contain live or test key material. Restricted keys (`rk_test_` / `rk_live_`) and secret keys (`sk_test_` / `sk_live_`) share the `STRIPE_ALLOW_LIVE=false` gate.
 
 DynamoDB tables use the AWS-managed table key, on-demand billing, and point-in-time recovery. Streams are off. X-Ray tracing on the functions is off, so a trace does not capture an address payload.
 
@@ -117,22 +121,24 @@ Point-in-time recovery can retain ciphertext for up to 35 days after a delete. T
 - A reader tip is a destination charge to the Express account on the match. `application_fee_amount` is omitted because the platform fee is 0 (`platform_fee_cents()` returns 0). A later change that sets a fee has to send a positive integer; Stripe rejects zero.
 - The builder tip is pay-what-you-want, with presets, and has no destination.
 - Amounts are 100 to 20000 cents.
-- Live mode: `enforce_stripe_mode` accepts an `sk_test_` key and rejects `sk_live_` unless the environment value is exactly `true`. The stack sets `STRIPE_ALLOW_LIVE=false`. There is no other switch.
-- The webhook checks `Stripe-Signature` (HMAC-SHA256 over `{timestamp}.{raw body}`, tolerance 300 seconds, multiple `v1` signatures accepted). Unsigned, stale, and bad signatures are 401. Processing is idempotent: a conditional put of `event#{id}` with `attribute_not_exists`. The parser does not surface a customer email or address from the event.
+- Live mode: `enforce_stripe_mode` accepts `rk_test_` and `sk_test_` keys and rejects `rk_live_` and `sk_live_` unless the environment value is exactly `true`. The stack sets `STRIPE_ALLOW_LIVE=false`. There is no other switch.
+- The webhook checks `Stripe-Signature` (HMAC-SHA256 over `{timestamp}.{raw body}`, tolerance 300 seconds, multiple `v1` signatures accepted). Unsigned, stale, and bad signatures are 401. A checkout is marked paid only when `payment_status` is `paid`, the tip row exists, and `checkoutSessionId` matches. The handler claims `event#{id}` with `attribute_not_exists`. A conditional check failure on the tip (missing row or a different `checkoutSessionId`) keeps that claim and returns 200. A transient DynamoDB error deletes the claim and returns 503 so Stripe can retry. The parser does not surface a customer email or address from the event.
 - Connect Express KYC is Stripe’s. This service stores the resulting account id and the payouts-ready flag.
 
 ## Edge
 
 - The site bucket blocks all public access, enforces SSL, uses bucket-owner-enforced ownership (no public ACLs), and is read through an origin access control. The template has no origin access identity.
-- Response headers: HSTS two years with subdomains and preload; the CSP from `infra/lib/headers.ts`; `nosniff`; frame deny; referrer `strict-origin-when-cross-origin`.
+- Response headers: HSTS two years with subdomains and preload; the CSP from `infra/lib/headers.ts`; `nosniff`; frame deny; referrer `strict-origin-when-cross-origin`; `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`.
 - CSP: `default-src 'self'`; `script-src 'self'` (no third-party script, no `'unsafe-inline'`); `object-src 'none'`; `base-uri 'self'`; `frame-ancestors 'none'`; `form-action 'self' https://checkout.stripe.com https://connect.stripe.com`. `connect-src` adds this user pool’s hosted-UI host and the regional `cognito-idp` host, because sign-up and the token exchange are browser calls. There is no `js.stripe.com` and no Google Fonts host. Fonts are the woff2 files in `frontend/fonts/`, under the SIL Open Font License (`frontend/fonts/OFL.txt`).
 - The HTML meta policy is a little wider on `connect-src` (a Cognito wildcard) so it does not intersect the header down to nothing. Browsers enforce both. `frame-ancestors` is sent as a header; a meta tag would ignore it. `frontend/devserver.py` sends the headers locally.
 - API CORS allows `https://${siteHost}` only.
-- The API origin speaks TLS 1.2 to API Gateway. API Gateway’s execute-api endpoint is TLS 1.2. Production synthesis requires an ACM certificate and sets the viewer policy to `TLSv1.2_2021`. A dev synth without `certificateArn` uses CloudFront’s default viewer certificate, which is the one case where this stack cannot raise the viewer minimum. Do not put real addresses on that distribution.
+- The API origin speaks TLS 1.2 to API Gateway. When `certificateArn` is set, the HTTP API sets `DisableExecuteApiEndpoint` and CloudFront’s `/api/*` origin is `api.<siteHost>` (the certificate has to cover that name). A dev synth without a certificate keeps the default execute-api origin so synthesis still has a working origin. Production synthesis requires an ACM certificate and sets the viewer policy to `TLSv1.2_2021`. A dev synth without `certificateArn` uses CloudFront’s default viewer certificate, which is the one case where this stack cannot raise the viewer minimum. Do not put real addresses on that distribution.
+- `X-Robots-Tag: noindex, noarchive` is added for `/write`, `/read`, `/auth`, and `/archive`, including the exact path with no trailing slash. `frontend/robots.txt` also disallows `/api/`.
+- Ten alarms, each a sum of at most ten concrete metrics: API 5xx and 4xx, Lambda errors, throttles, and concurrency split between the eight API functions and the three worker functions, and DynamoDB read and write throttles across the seven tables. Metrics Insights `WHERE` cannot use `OR`, and `SEARCH()` is rejected at deploy time.
 
 ## IAM
 
-Each function has its own role. Log permissions are `CreateLogStream` and `PutLogEvents` on that function’s log group. There is no `logs:*` managed policy. The policy test fails if a DynamoDB, KMS, S3, SSM, or Secrets Manager action uses `Resource: "*"`, and it fails if more than one statement grants `kms:Decrypt`.
+Each function has its own role. Log permissions are `CreateLogStream` and `PutLogEvents` on that function’s log group. There is no `logs:*` managed policy. The policy test fails if a DynamoDB, KMS, S3, SSM, or Secrets Manager action uses `Resource: "*"`. Address decrypt is the only `kms:Decrypt` without `kms:ViaService`. Stripe decrypts require that condition. The notify role may `ses:SendEmail` only on the domain identity, with `ses:FromAddress` equal to the configured desk address, and `cognito-idp:ListUsers` on this pool. The stack does not create an SES identity or a configuration set, because `st-cfn-exec` has no `ses:*`. Every role carries the `st-boundary` permissions boundary. The stack name is `st-<stage>`.
 
 | Function | DynamoDB | KMS | Other |
 | --- | --- | --- | --- |
@@ -168,7 +174,7 @@ Without an AWS account:
 
 1. `cd backend && cargo test --workspace` — matching uniformity and the demographic source ban, rotate history, tip routing to the reader on the match, address authorization (current writer only), child-age rejection, webhook signature and idempotency, live-key rejection, redaction.
 2. `cd backend && cargo clippy --workspace --all-targets -- -D warnings`.
-3. `cd infra && npm test` — private bucket, origin access control and no origin access identity, CSP and HSTS on the response-headers policy, a single `kms:Decrypt`, no wildcard resource on DynamoDB, KMS, S3, SSM, or Secrets Manager, `STRIPE_ALLOW_LIVE` false, budget 20 USD, Cognito client `GenerateSecret: false`, refresh rotation enabled, Plus tier.
+3. `cd infra && npm test` — private bucket, origin access control, CSP and HSTS, address decrypt without ViaService, Stripe decrypts with ViaService, no wildcard data resource, `STRIPE_ALLOW_LIVE` false, no budget, no trail, no GuardDuty, no Secrets Manager, no SSM parameter, no SES identity, WAF off, ten `st-*` alarms, every role on `st-boundary`, reserved concurrency, deletion protection, public routes limited to health and the Stripe webhook, and cdk-nag AwsSolutionsChecks with the suppressions below.
 4. `cd infra && npx cdk synth -c stage=dev` — succeeds on the stub binaries. `npx cdk synth -c stage=prod` fails without `certificateArn`.
 5. `python3 frontend/check.py` — no third-party script host, no inline handlers, committed config stays in mock mode, font files present.
 6. `python3 scripts/build.py` — the waitlist site still generates, and its own CSP is untouched.
@@ -184,9 +190,12 @@ When an account exists, before real personal information:
 
 ## Process notes for when an account exists
 
-- CloudTrail is in the stack: management events, not data events, so DynamoDB item contents are not in the trail.
-- GuardDuty is off unless `-c enableGuardDuty=true`. Turn it on when the account is real. Price it from the GuardDuty pricing page rather than from this document.
-- WAF is on unless `-c enableWaf=false`. The common rule group can be sensitive to body patterns. Address bodies are small and go to the API, which is behind the same distribution. If a real address is blocked, note the sampled request before loosening a rule.
+- CloudTrail, GuardDuty, and the account budget are the account baseline. This stack does not create a trail, a detector, a budget, or an SNS topic. Alarms publish to the existing topic `arn:aws:sns:us-east-1:204161828199:st-security-alerts`. `st-boundary` denies budget changes and `sns:Subscribe`.
+- WAF is off unless `-c enableWaf=true`. Bot Control is off unless that flag and `-c enableBotControl=true` are both set. The spend cap is stage throttling (default 2 requests per second, burst 4; sensitive routes 1 per second, burst 2; the webhook 5 per second, burst 10; health 1 per second, burst 2) plus reserved concurrency of 2 on API functions and 1 on triggers and the notifier. At 2 requests per second sustained, a month stays under about $40 of API Gateway, Lambda at 256 MB, DynamoDB, and logs. There is no budget resource.
+- A mailed-letter email is a static plain-text template. The only interpolated value is a validated `https` link to `/read/home/` or `/write/home/`. No user-supplied string enters the subject, body, or headers. A DynamoDB condition claims `noticeDispatchAt` once per turn, so a second click does not send again. `SES_ENABLED` defaults to false. A failed or skipped send does not undo the in-app status. The preference is read before any Cognito lookup. Opting out skips the email.
+- SES domain identity, MAIL FROM, and DNS are outside this stack. Phase 2/3 should add a MAIL FROM subdomain (MX and SPF), three DKIM CNAMEs, and DMARC alignment on `astrangerreads.com`. The apex can stay a null MX. New accounts are in the SES sandbox until AWS approves production access, so only verified recipient addresses receive mail until then. The current apex SPF `v=spf1 -all` stays until that DNS change. Security Guard should coordinate `st-cfn-exec` if a later change needs `ses:*` in CloudFormation.
+- Desk pseudonyms still label a match. The status line and the email do not include them. That split is intentional: the pseudonym is the name the two people already see, and the notice stays anonymous.
+- cdk-nag suppressions, each with a reason in `infra/lib/stack.ts`: COG1 passphrase length 15 without character classes; COG2 optional authenticator MFA; APIG4 on `GET /health` and `POST /webhooks/stripe` only; IAM5 for the log-stream suffix on each function’s own log group, the post-confirmation `userpool/*` cycle, and the CDK bucket-deployment object suffixes; S1 and CFR3 because access logs would store raw IPs; CFR1 no geo block; CFR2 WAF off by default. API access logs are on, and the format omits the source IP.
 - The ActiveReaders index uses one partition key, `ACTIVE`. That is acceptable at the size in `docs/DEPLOY.md`. It is the wrong shape for a very large reader pool.
 - Dependabot watches Cargo (`/backend`), npm (`/infra`), and GitHub Actions. CI runs tests, clippy, `cargo deny`, the CDK policy tests, synth, and the frontend checks.
 - The AWS SDK features are `default-https-client`, which uses current rustls. The SDK feature named `rustls` still selects the legacy 0.21 client, so it is not enabled.

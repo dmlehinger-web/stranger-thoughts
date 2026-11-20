@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use aws_sdk_dynamodb::types::AttributeValue;
 use chrono::{DateTime, Utc};
 use stranger_domain::address::SealedAddress;
+use stranger_domain::correspondence::{Direction, Turn};
 use stranger_domain::ids::{MatchId, ReaderId, WriterId};
 use stranger_domain::matching::MatchCandidate;
 use stranger_domain::model::MatchRecord;
@@ -98,6 +99,60 @@ pub fn attr_n_u64(item: &HashMap<String, AttributeValue>, key: &str) -> u64 {
         .and_then(|value| value.as_n().ok())
         .and_then(|value| value.parse().ok())
         .unwrap_or(0)
+}
+
+pub fn turn_sk(sequence: u32) -> String {
+    format!("turn#{sequence:04}")
+}
+
+pub fn turn_item(match_id: &str, turn: &Turn) -> HashMap<String, AttributeValue> {
+    HashMap::from([
+        ("matchId".into(), s(match_id)),
+        ("sk".into(), s(turn_sk(turn.sequence))),
+        ("turnId".into(), s(&turn.turn_id)),
+        ("sequence".into(), AttributeValue::N(turn.sequence.to_string())),
+        ("direction".into(), s(direction_name(turn.direction))),
+        ("mailedAt".into(), s(turn.mailed_at.to_rfc3339())),
+        ("noticeClaimedAt".into(), s(turn.mailed_at.to_rfc3339())),
+    ])
+}
+
+pub fn turn_from_item(item: &HashMap<String, AttributeValue>) -> Result<Turn, StoreError> {
+    let mailed_at = attr_s(item, "mailedAt").ok_or(StoreError)?;
+    let direction = match attr_s(item, "direction").as_deref() {
+        Some("writer_to_reader") => Direction::WriterToReader,
+        Some("reader_to_writer") => Direction::ReaderToWriter,
+        _ => return Err(StoreError),
+    };
+    let sequence = attr_n_u64(item, "sequence");
+    if sequence == 0 || sequence > 30 {
+        return Err(StoreError);
+    }
+    Ok(Turn {
+        turn_id: attr_s(item, "turnId").ok_or(StoreError)?,
+        sequence: sequence as u32,
+        direction,
+        mailed_at: DateTime::parse_from_rfc3339(&mailed_at)
+            .map_err(|_| StoreError)?
+            .with_timezone(&Utc),
+        received_at: attr_s(item, "receivedAt").and_then(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .ok()
+                .map(|stamp| stamp.with_timezone(&Utc))
+        }),
+        notice_sent_at: attr_s(item, "noticeSentAt").and_then(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .ok()
+                .map(|stamp| stamp.with_timezone(&Utc))
+        }),
+    })
+}
+
+fn direction_name(direction: Direction) -> &'static str {
+    match direction {
+        Direction::WriterToReader => "writer_to_reader",
+        Direction::ReaderToWriter => "reader_to_writer",
+    }
 }
 
 fn attr_ss(item: &HashMap<String, AttributeValue>, key: &str) -> Vec<String> {

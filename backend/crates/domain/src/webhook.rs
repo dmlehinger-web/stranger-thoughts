@@ -115,12 +115,41 @@ fn checkout_action(object: &Value) -> WebhookAction {
         .and_then(Value::as_str)
         .unwrap_or("");
     let session_id = object.get("id").and_then(Value::as_str).unwrap_or("");
-    if tip_id.is_empty() || !session_id.starts_with("cs_") {
+    let paid = object.get("payment_status").and_then(Value::as_str) == Some("paid");
+    if !paid || tip_id.is_empty() || !session_id.starts_with("cs_") {
         return WebhookAction::Ignore;
     }
     WebhookAction::MarkTipPaid {
         tip_id: tip_id.to_string(),
         session_id: session_id.to_string(),
+    }
+}
+
+/// What the claimed write did. A condition failure is permanent. Anything else can be retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimedWrite {
+    Done,
+    Conflict,
+    Transient,
+}
+
+/// How the webhook answers Stripe after the event row is already claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebhookDisposition {
+    pub status: u16,
+    pub release_claim: bool,
+}
+
+pub fn disposition_after_claim(write: ClaimedWrite) -> WebhookDisposition {
+    match write {
+        ClaimedWrite::Done | ClaimedWrite::Conflict => WebhookDisposition {
+            status: 200,
+            release_claim: false,
+        },
+        ClaimedWrite::Transient => WebhookDisposition {
+            status: 503,
+            release_claim: true,
+        },
     }
 }
 
@@ -195,6 +224,7 @@ mod tests {
             "type":"checkout.session.completed",
             "data":{"object":{
                 "id":"cs_test_123",
+                "payment_status":"paid",
                 "customer_details":{"email":"person@example.com","address":{"line1":"PO Box 9"}},
                 "metadata":{"tip_id":"tip-1","kind":"reader"}
             }}
@@ -210,5 +240,35 @@ mod tests {
         let rendered = format!("{:?}", parsed.action);
         assert!(!rendered.contains("example.com"));
         assert!(!rendered.contains("PO Box"));
+    }
+
+    #[test]
+    fn unpaid_checkout_is_not_marked_paid() {
+        let body = br#"{
+            "id":"evt_456",
+            "type":"checkout.session.completed",
+            "data":{"object":{
+                "id":"cs_test_456",
+                "payment_status":"unpaid",
+                "metadata":{"tip_id":"tip-2"}
+            }}
+        }"#;
+        let parsed = parse_event(body).unwrap();
+        assert_eq!(parsed.action, WebhookAction::Ignore);
+    }
+
+    #[test]
+    fn conditional_check_failure_keeps_the_claim_and_returns_200() {
+        let disposition = disposition_after_claim(ClaimedWrite::Conflict);
+        assert_eq!(disposition.status, 200);
+        assert!(!disposition.release_claim);
+    }
+
+    #[test]
+    fn transient_write_releases_the_claim_and_returns_503() {
+        let disposition = disposition_after_claim(ClaimedWrite::Transient);
+        assert_eq!(disposition.status, 503);
+        assert!(disposition.release_claim);
+        assert!(!disposition_after_claim(ClaimedWrite::Done).release_claim);
     }
 }

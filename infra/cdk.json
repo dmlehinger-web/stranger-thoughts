@@ -1,6 +1,9 @@
 {
   "app": "npx tsx bin/app.ts",
   "context": {
-    "@aws-cdk/core:checkSecretUsage": true
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:permissionsBoundary": {
+      "name": "st-boundary"
+    }
   }
 }
