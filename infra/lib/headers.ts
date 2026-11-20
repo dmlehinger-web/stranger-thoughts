@@ -25,10 +25,13 @@ export function contentSecurityPolicy(hosts: CspHosts): string {
   ].join("; ");
 }
 
+export const PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
+
 export const SECURITY_HEADER_NAMES = [
   "Strict-Transport-Security",
   "Content-Security-Policy",
   "X-Content-Type-Options",
   "Referrer-Policy",
   "X-Frame-Options",
+  "Permissions-Policy",
 ] as const;

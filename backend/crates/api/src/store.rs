@@ -19,6 +19,8 @@ use stranger_domain::validation::Demographics;
 use crate::http::ApiFailure;
 use crate::items::{self, attr_bool, attr_n_u64, attr_s, s};
 
+const TIP_PAID_CONDITION: &str = "attribute_exists(tipId) AND checkoutSessionId = :session";
+
 #[derive(Debug)]
 pub struct StoreError;
 
@@ -352,7 +354,8 @@ impl Store {
             .update_item()
             .table_name(&self.tips)
             .key("tipId", s(tip_id))
-            .update_expression("SET #status = :paid, checkoutSessionId = :session")
+            .update_expression("SET #status = :paid")
+            .condition_expression(TIP_PAID_CONDITION)
             .expression_attribute_names("#status", "status")
             .expression_attribute_values(":paid", s("paid"))
             .expression_attribute_values(":session", s(session_id))
@@ -406,6 +409,19 @@ impl Store {
                 }
             }
         }
+    }
+
+    /// Drop a claim so Stripe can retry after a transient write failure.
+    pub async fn release_stripe_event(&self, event_id: &str) -> Result<(), StoreError> {
+        self.client
+            .delete_item()
+            .table_name(&self.tips)
+            .key("tipId", s(format!("event#{event_id}")))
+            .condition_expression("attribute_exists(tipId)")
+            .send()
+            .await
+            .map_err(|_| StoreError)?;
+        Ok(())
     }
 
     pub async fn bump_address_reads(
@@ -665,30 +681,57 @@ impl Store {
         if subject.contains('@') || subject.contains(' ') || subject.len() > 80 {
             return Err(ApiFailure::Invalid);
         }
-        let existing = self
-            .get_item(&self.rates, "subject", subject, "sk", "window", None)
-            .await
-            .map_err(|_| ApiFailure::Invalid)?;
-        let parsed = existing.as_ref().and_then(|item| {
-            let start = attr_s(item, "windowStart")?;
-            let count = attr_n_u64(item, "count") as u32;
-            let start = DateTime::parse_from_rfc3339(&start).ok()?.with_timezone(&Utc);
-            Some((start, count))
-        });
-        let (start, count) = rate_limit::bump_window(parsed, now, max, window).map_err(|_| ApiFailure::RateLimited)?;
-        let ttl = (start + window + chrono::Duration::hours(1)).timestamp();
-        self.client
-            .put_item()
+        if max == 0 || window <= chrono::Duration::zero() {
+            return Err(ApiFailure::RateLimited);
+        }
+        // Epoch seconds, so the condition compares numbers. This matches bump_window:
+        // inside the window the count increments until max; otherwise it starts over at 1.
+        let oldest = (now - window).timestamp().to_string();
+        let now_secs = now.timestamp().to_string();
+        let ttl = (now + window + chrono::Duration::hours(1)).timestamp().to_string();
+        let increment = self
+            .client
+            .update_item()
             .table_name(&self.rates)
-            .item("subject", s(subject))
-            .item("sk", s("window"))
-            .item("windowStart", s(start.to_rfc3339()))
-            .item("count", AttributeValue::N(count.to_string()))
-            .item("ttl", AttributeValue::N(ttl.to_string()))
+            .key("subject", s(subject))
+            .key("sk", s("window"))
+            .update_expression("ADD #count :one")
+            .condition_expression(
+                "attribute_exists(sk) AND windowStart > :oldest AND windowStart <= :now AND #count < :max",
+            )
+            .expression_attribute_names("#count", "count")
+            .expression_attribute_values(":one", AttributeValue::N("1".into()))
+            .expression_attribute_values(":oldest", AttributeValue::N(oldest.clone()))
+            .expression_attribute_values(":now", AttributeValue::N(now_secs.clone()))
+            .expression_attribute_values(":max", AttributeValue::N(max.to_string()))
             .send()
-            .await
-            .map_err(|_| ApiFailure::Invalid)?;
-        Ok(())
+            .await;
+        match conditional_update(increment) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(_) => return Err(ApiFailure::Invalid),
+        }
+        let reset = self
+            .client
+            .update_item()
+            .table_name(&self.rates)
+            .key("subject", s(subject))
+            .key("sk", s("window"))
+            .update_expression("SET #count = :one, windowStart = :now, #ttl = :ttl")
+            .condition_expression("attribute_not_exists(sk) OR windowStart <= :oldest OR windowStart > :now")
+            .expression_attribute_names("#count", "count")
+            .expression_attribute_names("#ttl", "ttl")
+            .expression_attribute_values(":one", AttributeValue::N("1".into()))
+            .expression_attribute_values(":now", AttributeValue::N(now_secs))
+            .expression_attribute_values(":ttl", AttributeValue::N(ttl))
+            .expression_attribute_values(":oldest", AttributeValue::N(oldest))
+            .send()
+            .await;
+        match conditional_update(reset) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(ApiFailure::RateLimited),
+            Err(_) => Err(ApiFailure::Invalid),
+        }
     }
 
     pub async fn save_private_copy(
@@ -980,5 +1023,16 @@ fn conditional_update(
                 Err(StoreError)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TIP_PAID_CONDITION;
+
+    #[test]
+    fn tip_paid_guard_requires_the_row_and_the_checkout_session() {
+        assert!(TIP_PAID_CONDITION.contains("attribute_exists(tipId)"));
+        assert!(TIP_PAID_CONDITION.contains("checkoutSessionId = :session"));
     }
 }

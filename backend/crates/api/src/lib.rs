@@ -465,14 +465,18 @@ async fn webhook_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
     if !store.claim_stripe_event(&event.id).await? {
         return Ok(json_response(200, &json!({"duplicate": true})));
     }
-    match event.action {
+    let processed = match &event.action {
         stranger_domain::webhook::WebhookAction::MarkTipPaid { tip_id, session_id } => {
-            store.mark_tip_paid(&tip_id, &session_id).await?;
+            store.mark_tip_paid(tip_id, session_id).await
         }
         stranger_domain::webhook::WebhookAction::UpdatePayouts { reader_id, ready } => {
-            store.set_payouts_ready(&reader_id, ready).await?;
+            store.set_payouts_ready(reader_id, *ready).await
         }
-        stranger_domain::webhook::WebhookAction::Ignore => {}
+        stranger_domain::webhook::WebhookAction::Ignore => Ok(()),
+    };
+    if processed.is_err() {
+        let _ = store.release_stripe_event(&event.id).await;
+        return Ok(json_response(503, &json!({"error": "retry"})));
     }
     Ok(json_response(200, &json!({"received": true})))
 }
@@ -799,7 +803,7 @@ async fn invoke_notice(
         .lambda
         .invoke()
         .function_name(name)
-        .invocation_type(aws_sdk_lambda::types::InvocationType::RequestResponse)
+        .invocation_type(aws_sdk_lambda::types::InvocationType::Event)
         .payload(aws_sdk_lambda::primitives::Blob::new(bytes))
         .send()
         .await;

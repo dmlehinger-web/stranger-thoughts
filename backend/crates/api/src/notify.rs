@@ -46,10 +46,12 @@ pub async fn handle_notify(payload: Value) -> Result<Value, Error> {
     };
     let aws = Aws::get().await.map_err(|_| Error::from("aws"))?;
     let store = store::Store::from_env(aws.dynamo.clone());
-    let alerts_on = store
-        .mail_alerts_enabled(role, &job.recipient_sub)
-        .await
-        .unwrap_or(true);
+    let alerts_on = preference_allows_send(
+        store
+            .mail_alerts_enabled(role, &job.recipient_sub)
+            .await
+            .map_err(|_| ()),
+    );
     if !alerts_on {
         tracing::info!(
             "{}",
@@ -105,6 +107,12 @@ pub async fn handle_notify(payload: Value) -> Result<Value, Error> {
         .mark_notice_sent(&job.match_id, job.sequence, chrono::Utc::now())
         .await;
     Ok(json!({"sent": true}))
+}
+
+/// A failed preference read skips the email. A missing attribute still means alerts
+/// are on; that default is applied inside the store before this result is returned.
+fn preference_allows_send(read: Result<bool, ()>) -> bool {
+    read.unwrap_or(false)
 }
 
 fn safe_token(value: &str) -> bool {
@@ -177,4 +185,16 @@ async fn send_static(aws: &Aws, from: &str, to: &str, subject: &str, body: &str)
         .await
         .map_err(|_| ())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preference_allows_send;
+
+    #[test]
+    fn opt_out_read_failure_does_not_send() {
+        assert!(!preference_allows_send(Err(())));
+        assert!(!preference_allows_send(Ok(false)));
+        assert!(preference_allows_send(Ok(true)));
+    }
 }

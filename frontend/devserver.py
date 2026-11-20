@@ -3,6 +3,7 @@
 
 import http.server
 import os
+import re
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8080"))
@@ -26,8 +27,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        )
         path = self.path.split("?", 1)[0]
-        if path.startswith(("/write", "/read", "/auth", "/archive")):
+        if re.fullmatch(r"/(write|read|auth|archive)(/.*)?", path):
             self.send_header("X-Robots-Tag", "noindex, noarchive")
         super().end_headers()
 

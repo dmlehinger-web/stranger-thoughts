@@ -115,7 +115,8 @@ fn checkout_action(object: &Value) -> WebhookAction {
         .and_then(Value::as_str)
         .unwrap_or("");
     let session_id = object.get("id").and_then(Value::as_str).unwrap_or("");
-    if tip_id.is_empty() || !session_id.starts_with("cs_") {
+    let paid = object.get("payment_status").and_then(Value::as_str) == Some("paid");
+    if !paid || tip_id.is_empty() || !session_id.starts_with("cs_") {
         return WebhookAction::Ignore;
     }
     WebhookAction::MarkTipPaid {
@@ -195,6 +196,7 @@ mod tests {
             "type":"checkout.session.completed",
             "data":{"object":{
                 "id":"cs_test_123",
+                "payment_status":"paid",
                 "customer_details":{"email":"person@example.com","address":{"line1":"PO Box 9"}},
                 "metadata":{"tip_id":"tip-1","kind":"reader"}
             }}
@@ -210,5 +212,20 @@ mod tests {
         let rendered = format!("{:?}", parsed.action);
         assert!(!rendered.contains("example.com"));
         assert!(!rendered.contains("PO Box"));
+    }
+
+    #[test]
+    fn unpaid_checkout_is_not_marked_paid() {
+        let body = br#"{
+            "id":"evt_456",
+            "type":"checkout.session.completed",
+            "data":{"object":{
+                "id":"cs_test_456",
+                "payment_status":"unpaid",
+                "metadata":{"tip_id":"tip-2"}
+            }}
+        }"#;
+        let parsed = parse_event(body).unwrap();
+        assert_eq!(parsed.action, WebhookAction::Ignore);
     }
 }

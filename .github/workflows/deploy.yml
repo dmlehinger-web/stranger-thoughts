@@ -31,13 +31,23 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: deploy-${{ inputs.stage }}
+  cancel-in-progress: false
+
 jobs:
   cdk:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     permissions:
       id-token: write
       contents: read
+    env:
+      INPUT_STAGE: ${{ inputs.stage }}
+      INPUT_SITE_HOST: ${{ inputs.siteHost }}
+      INPUT_COGNITO_DOMAIN_PREFIX: ${{ inputs.cognitoDomainPrefix }}
+      INPUT_CERTIFICATE_ARN: ${{ inputs.certificateArn }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -49,39 +59,54 @@ jobs:
         with:
           toolchain: "1.100.0"
       - name: Install cargo-lambda
-        run: pipx install cargo-lambda
+        run: pipx install cargo-lambda==1.9.2
       - name: Build Rust Lambdas
         working-directory: backend
         run: cargo lambda build --release --arm64
+      - name: Install CDK dependencies
+        working-directory: infra
+        run: npm ci --ignore-scripts
+      - name: Validate dispatch inputs
+        run: |
+          set -euo pipefail
+          case "$INPUT_STAGE" in
+            dev|prod) ;;
+            *) echo "stage must be dev or prod" >&2; exit 1 ;;
+          esac
+          host_re='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+          prefix_re='^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
+          cert_re='^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[a-f0-9-]+$'
+          printf '%s' "$INPUT_SITE_HOST" | grep -Eq "$host_re" || { echo "siteHost is not a hostname" >&2; exit 1; }
+          printf '%s' "$INPUT_COGNITO_DOMAIN_PREFIX" | grep -Eq "$prefix_re" || { echo "cognitoDomainPrefix is not a prefix" >&2; exit 1; }
+          if [ -n "$INPUT_CERTIFICATE_ARN" ]; then
+            printf '%s' "$INPUT_CERTIFICATE_ARN" | grep -Eq "$cert_re" || { echo "certificateArn is not a us-east-1 ACM certificate" >&2; exit 1; }
+          fi
       - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
         with:
           role-to-assume: arn:aws:iam::204161828199:role/st-deploy
           aws-region: us-east-1
-      - name: Install CDK dependencies
-        working-directory: infra
-        run: npm ci
       - name: Diff
         if: inputs.mode == 'diff'
         working-directory: infra
         env:
           LAMBDA_ASSET_ROOT: ${{ github.workspace }}/backend/target/lambda
-        run: >
-          npx cdk diff
-          -c stage=${{ inputs.stage }}
-          -c siteHost=${{ inputs.siteHost }}
-          -c cognitoDomainPrefix=${{ inputs.cognitoDomainPrefix }}
-          -c certificateArn=${{ inputs.certificateArn }}
+        run: |
+          npx cdk diff \
+            -c stage="$INPUT_STAGE" \
+            -c siteHost="$INPUT_SITE_HOST" \
+            -c cognitoDomainPrefix="$INPUT_COGNITO_DOMAIN_PREFIX" \
+            -c certificateArn="$INPUT_CERTIFICATE_ARN"
       - name: Deploy, first pass
         if: inputs.mode == 'deploy'
         working-directory: infra
         env:
           LAMBDA_ASSET_ROOT: ${{ github.workspace }}/backend/target/lambda
-        run: >
-          npx cdk deploy --require-approval never --outputs-file cdk-outputs.json
-          -c stage=${{ inputs.stage }}
-          -c siteHost=${{ inputs.siteHost }}
-          -c cognitoDomainPrefix=${{ inputs.cognitoDomainPrefix }}
-          -c certificateArn=${{ inputs.certificateArn }}
+        run: |
+          npx cdk deploy --require-approval never --outputs-file cdk-outputs.json \
+            -c stage="$INPUT_STAGE" \
+            -c siteHost="$INPUT_SITE_HOST" \
+            -c cognitoDomainPrefix="$INPUT_COGNITO_DOMAIN_PREFIX" \
+            -c certificateArn="$INPUT_CERTIFICATE_ARN"
       - name: Render config from stack outputs
         if: inputs.mode == 'deploy'
         working-directory: infra
@@ -96,10 +121,10 @@ jobs:
         working-directory: infra
         env:
           LAMBDA_ASSET_ROOT: ${{ github.workspace }}/backend/target/lambda
-        run: >
-          npx cdk deploy --require-approval never
-          -c stage=${{ inputs.stage }}
-          -c siteHost=${{ inputs.siteHost }}
-          -c cognitoDomainPrefix=${{ inputs.cognitoDomainPrefix }}
-          -c certificateArn=${{ inputs.certificateArn }}
-          -c productionConfig=true
+        run: |
+          npx cdk deploy --require-approval never \
+            -c stage="$INPUT_STAGE" \
+            -c siteHost="$INPUT_SITE_HOST" \
+            -c cognitoDomainPrefix="$INPUT_COGNITO_DOMAIN_PREFIX" \
+            -c certificateArn="$INPUT_CERTIFICATE_ARN" \
+            -c productionConfig=true

@@ -6,7 +6,7 @@ This repository does not deploy itself. `infra/package.json` makes `npm run depl
 
 1. AWS account `204161828199`, region `us-east-1` only. The stack name is `st-<stage>`. Every role uses the permissions boundary `st-boundary`.
 2. A unique Cognito domain prefix: `-c cognitoDomainPrefix=your-prefix`.
-3. For a production stage, an ACM certificate in `us-east-1` for the site hostname: `-c certificateArn=arn:aws:acm:us-east-1:204161828199:certificate/ID`. Production synthesis refuses to run without it, so CloudFront can require TLS 1.2 (`TLSv1.2_2021`). A dev stage can synthesize without a certificate.
+3. For a production stage, an ACM certificate in `us-east-1` that covers the site hostname and `api.<siteHost>`: `-c certificateArn=arn:aws:acm:us-east-1:204161828199:certificate/ID`. Production synthesis refuses to run without it, so CloudFront can require TLS 1.2 (`TLSv1.2_2021`). A dev stage can synthesize without a certificate. When the certificate is set, the HTTP API turns off its default execute-api hostname and CloudFront calls `api.<siteHost>`. Public callers stay on `https://<siteHost>/api/`.
 4. The site hostname, passed as `-c siteHost=`. Use `astrangerreads.com` when DNS is ready. Callback URLs, CORS, and `APP_BASE_URL` are built from it.
 5. Stripe test key and webhook signing secret, as SSM SecureString parameters you create yourself. The stack does not create them. See below. Select the app key `alias/st-<stage>` when you encrypt them.
 6. `cargo-lambda` that produces `linux/arm64` binaries for `provided.al2023`. The files in `infra/lambda-stubs/` exist so `cdk synth` works. A deploy refuses those stubs.
@@ -69,7 +69,7 @@ Create these two SecureString parameters yourself, encrypted with `alias/st-<sta
 - `/st/stripe/api-key`
 - `/st/stripe/webhook-secret`
 
-Use a test-mode restricted key or a test-mode secret key, and the signing secret from the test-mode webhook endpoint. The webhook URL is the API Gateway endpoint plus `/webhooks/stripe`, not the CloudFront `/api` path. Stripe calls API Gateway directly.
+Use a test-mode restricted key or a test-mode secret key, and the signing secret from the test-mode webhook endpoint. The webhook URL is `https://<siteHost>/api/webhooks/stripe` once the certificate is attached, so Stripe reaches the API through CloudFront. A dev stack without a certificate still exposes the default execute-api hostname, which is the origin CloudFront uses in that case.
 
 The code rejects a live key (`rk_live_` or `sk_live_`) unless `STRIPE_ALLOW_LIVE` is exactly `true`. The stack sets that variable to `false`. Do not change it until a later review says live mode is allowed.
 
@@ -79,9 +79,11 @@ In the Stripe dashboard (test mode), the webhook events to send are `checkout.se
 
 DNS and the certificate are separate from the first synth. When you have a name:
 
-1. Request the certificate in `us-east-1`.
-2. Deploy again with `-c siteHost=` set to that name and `-c certificateArn=` set to the certificate.
-3. Point DNS at the CloudFront domain from the `SiteUrl` output.
+1. Request the certificate in `us-east-1`. It has to cover the site hostname and `api.<siteHost>`.
+2. Deploy again with `-c siteHost=` set to that name and `-c certificateArn=` set to the certificate. That deploy disables the default execute-api endpoint and maps `api.<siteHost>` as the CloudFront `/api/*` origin.
+3. Point the site hostname at the CloudFront domain from the `SiteUrl` output. Point `api.<siteHost>` at the API Gateway regional domain for that custom domain. The public API remains `https://<siteHost>/api/`.
+
+The six alarms (`st-<stage>-api-5xx`, `api-4xx`, `lambda-errors`, `lambda-throttles`, `lambda-concurrency`, `dynamodb-throttles`) are Metrics Insights queries that name this stack’s functions and tables. They do not use `SEARCH()`.
 
 Do not add a `CNAME` file to this repository for the waitlist site until the waitlist’s own cutover in the root README. The v2 hostname is independent of GitHub Pages.
 

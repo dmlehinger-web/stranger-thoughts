@@ -24,7 +24,7 @@ import type { IConstruct } from "constructs";
 import type { Construct } from "constructs";
 import { NagSuppressions } from "cdk-nag";
 import routes from "../../backend/routes.json" with { type: "json" };
-import { contentSecurityPolicy } from "./headers.js";
+import { contentSecurityPolicy, PERMISSIONS_POLICY } from "./headers.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -78,8 +78,8 @@ export class StrangerThoughtsStack extends cdk.Stack {
       pendingWindow: cdk.Duration.days(stage === "prod" ? 30 : 7),
     });
 
-    const users = table(this, "Users", "userId", "sk", removal, addressKey);
-    const readers = table(this, "Readers", "readerId", "sk", removal, addressKey);
+    const users = table(this, "Users", "userId", "sk", removal, addressKey, stage);
+    const readers = table(this, "Readers", "readerId", "sk", removal, addressKey, stage);
     readers.addGlobalSecondaryIndex({
       indexName: "ActiveReaders",
       partitionKey: { name: "activePk", type: dynamodb.AttributeType.STRING },
@@ -87,7 +87,7 @@ export class StrangerThoughtsStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.INCLUDE,
       nonKeyAttributes: ["pseudonym", "blockedWriterIds"],
     });
-    const matches = table(this, "Matches", "writerId", "matchedAt", removal, addressKey);
+    const matches = table(this, "Matches", "writerId", "matchedAt", removal, addressKey, stage);
     matches.addGlobalSecondaryIndex({
       indexName: "ByMatch",
       partitionKey: { name: "matchId", type: dynamodb.AttributeType.STRING },
@@ -99,10 +99,10 @@ export class StrangerThoughtsStack extends cdk.Stack {
       sortKey: { name: "matchedAt", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    const tips = table(this, "Tips", "tipId", undefined, removal, addressKey);
-    const correspondence = table(this, "Correspondence", "matchId", "sk", removal, addressKey);
-    const preservation = table(this, "Preservation", "ownerId", "sk", removal, addressKey);
-    const rates = table(this, "RateLimits", "subject", "sk", removal, addressKey);
+    const tips = table(this, "Tips", "tipId", undefined, removal, addressKey, stage);
+    const correspondence = table(this, "Correspondence", "matchId", "sk", removal, addressKey, stage);
+    const preservation = table(this, "Preservation", "ownerId", "sk", removal, addressKey, stage);
+    const rates = table(this, "RateLimits", "subject", "sk", removal, addressKey, stage);
     (rates.node.defaultChild as dynamodb.CfnTable).timeToLiveSpecification = {
       attributeName: "ttl",
       enabled: true,
@@ -247,17 +247,18 @@ export class StrangerThoughtsStack extends cdk.Stack {
     grantTable(profileFn, readers, ["dynamodb:UpdateItem", "dynamodb:PutItem"]);
     addressKey.grant(profileFn, "kms:GenerateDataKey");
 
-    grantTable(healthFn, rates, ["dynamodb:GetItem", "dynamodb:PutItem"]);
+    grantTable(healthFn, rates, ["dynamodb:UpdateItem"]);
 
     grantTable(matchingFn, users, ["dynamodb:GetItem"]);
     grantTable(matchingFn, matches, ["dynamodb:Query", "dynamodb:UpdateItem"]);
     grantTable(matchingFn, correspondence, ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
-    grantTable(matchingFn, rates, ["dynamodb:GetItem", "dynamodb:PutItem"]);
+    grantTable(matchingFn, rates, ["dynamodb:UpdateItem"]);
     matchingFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["lambda:InvokeFunction"],
       resources: [notifyFn.functionArn],
     }));
     grantIndex(matchingFn, matches, "ByMatch", ["dynamodb:Query"]);
+    grantIndex(matchingFn, matches, "ByReader", ["dynamodb:Query"]);
     grantIndex(matchingFn, readers, "ActiveReaders", ["dynamodb:Query"]);
     matchingFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:PutItem", "dynamodb:TransactWriteItems"],
@@ -310,20 +311,20 @@ export class StrangerThoughtsStack extends cdk.Stack {
       resources: [readers.tableArn],
       conditions: {
         "ForAllValues:StringEquals": {
-          "dynamodb:Attributes": ["stripeAccountId"],
+          "dynamodb:Attributes": ["readerId", "sk", "stripeAccountId"],
         },
       },
     }));
     grantParameter(paymentsFn, stripeApiArn, addressKey);
 
-    grantTable(webhookFn, rates, ["dynamodb:GetItem", "dynamodb:PutItem"]);
-    grantTable(webhookFn, tips, ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem"]);
+    grantTable(webhookFn, rates, ["dynamodb:UpdateItem"]);
+    grantTable(webhookFn, tips, ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem", "dynamodb:DeleteItem"]);
     webhookFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:UpdateItem"],
       resources: [readers.tableArn],
       conditions: {
         "ForAllValues:StringEquals": {
-          "dynamodb:Attributes": ["payoutsReady"],
+          "dynamodb:Attributes": ["readerId", "sk", "payoutsReady"],
         },
       },
     }));
@@ -354,12 +355,13 @@ export class StrangerThoughtsStack extends cdk.Stack {
       resources: [readers.tableArn],
       conditions: {
         "ForAllValues:StringEquals": {
-          "dynamodb:Attributes": ["blockedWriterIds", "activePk", "mailAlerts"],
+          "dynamodb:Attributes": ["readerId", "sk", "blockedWriterIds", "activePk", "mailAlerts"],
         },
       },
     }));
     grantTable(accountFn, readers, ["dynamodb:DeleteItem"]);
     grantTable(accountFn, matches, ["dynamodb:Query", "dynamodb:UpdateItem"]);
+    grantTable(accountFn, correspondence, ["dynamodb:Query"]);
     grantIndex(accountFn, matches, "ByReader", ["dynamodb:Query"]);
     grantIndex(accountFn, tips, "ByReader", ["dynamodb:Query"]);
     accountFn.addToRolePolicy(new iam.PolicyStatement({
@@ -378,8 +380,8 @@ export class StrangerThoughtsStack extends cdk.Stack {
       resources: [pool.userPoolArn],
     }));
 
-    grantTable(preservationFn, preservation, ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:DeleteItem"]);
-    grantTable(preservationFn, rates, ["dynamodb:GetItem", "dynamodb:PutItem"]);
+    grantTable(preservationFn, preservation, ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:DeleteItem"]);
+    grantTable(preservationFn, rates, ["dynamodb:UpdateItem"]);
     grantTable(preservationFn, matches, ["dynamodb:Query"]);
     grantIndex(preservationFn, matches, "ByReader", ["dynamodb:Query"]);
 
@@ -419,6 +421,9 @@ export class StrangerThoughtsStack extends cdk.Stack {
 
     const httpApi = new apigwv2.HttpApi(this, "HttpApi", {
       apiName: `stranger-thoughts-${stage}`,
+      // Off once CloudFront can call a custom domain. Leaving the default
+      // endpoint on without a certificate is what makes a dev origin work.
+      disableExecuteApiEndpoint: Boolean(props.certificateArn),
       corsPreflight: {
         allowOrigins: [siteOrigin],
         allowMethods: [
@@ -543,6 +548,13 @@ export class StrangerThoughtsStack extends cdk.Stack {
         },
         contentSecurityPolicy: { contentSecurityPolicy: csp, override: true },
       },
+      customHeadersBehavior: {
+        customHeaders: [{
+          header: "Permissions-Policy",
+          value: PERMISSIONS_POLICY,
+          override: true,
+        }],
+      },
     });
     const spaRewrite = new cloudfront.Function(this, "SpaRewrite", {
       code: cloudfront.FunctionCode.fromInline(`function handler(event) {
@@ -555,9 +567,13 @@ export class StrangerThoughtsStack extends cdk.Stack {
     const robotsHeader = new cloudfront.Function(this, "RobotsHeader", {
       code: cloudfront.FunctionCode.fromInline(`function handler(event) {
   var response = event.response;
-  var uri = event.request.uri;
-  if (uri.indexOf("/write/") === 0 || uri.indexOf("/read/") === 0 || uri.indexOf("/auth/") === 0 || uri.indexOf("/archive/") === 0) {
-    response.headers["x-robots-tag"] = { value: "noindex, noarchive" };
+  var uri = event.request.uri.split("?")[0];
+  var roots = ["/write", "/read", "/auth", "/archive"];
+  for (var i = 0; i < roots.length; i++) {
+    if (uri === roots[i] || uri.indexOf(roots[i] + "/") === 0) {
+      response.headers["x-robots-tag"] = { value: "noindex, noarchive" };
+      break;
+    }
   }
   return response;
 }`),
@@ -598,6 +614,21 @@ export class StrangerThoughtsStack extends cdk.Stack {
     if (stage === "prod" && !props.certificateArn) {
       throw new Error("prod requires -c certificateArn= so CloudFront can require TLS 1.2");
     }
+    let apiOriginHost: string;
+    if (props.certificateArn) {
+      const apiDomain = new apigwv2.DomainName(this, "ApiDomain", {
+        domainName: `api.${props.siteHost}`,
+        certificate: acm.Certificate.fromCertificateArn(this, "ApiCert", props.certificateArn),
+      });
+      new apigwv2.ApiMapping(this, "ApiMapping", {
+        api: httpApi,
+        domainName: apiDomain,
+        stage: httpApi.defaultStage!,
+      });
+      apiOriginHost = apiDomain.name;
+    } else {
+      apiOriginHost = cdk.Fn.select(2, cdk.Fn.split("/", httpApi.apiEndpoint));
+    }
     const distribution = new cloudfront.Distribution(this, "Cdn", {
       defaultRootObject: "index.html",
       ...(props.certificateArn
@@ -626,7 +657,7 @@ export class StrangerThoughtsStack extends cdk.Stack {
       },
       additionalBehaviors: {
         "/api/*": {
-          origin: new origins.HttpOrigin(cdk.Fn.select(2, cdk.Fn.split("/", httpApi.apiEndpoint)), {
+          origin: new origins.HttpOrigin(apiOriginHost, {
             protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
           }),
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
@@ -658,8 +689,23 @@ export class StrangerThoughtsStack extends cdk.Stack {
     const alerts = sns.Topic.fromTopicArn(this, "Alerts", props.alertsTopicArn);
     const action = new cw_actions.SnsAction(alerts);
     const reserved = 8 * 2 + 3;
-    const searchSum = (namespace: string, dimension: string, metricName: string) => new cloudwatch.MathExpression({
-      expression: `SUM(SEARCH('{${namespace},${dimension}} MetricName="${metricName}"', 'Sum', 300))`,
+    const watchedFunctions = [healthFn, profileFn, matchingFn, addressFn, paymentsFn, webhookFn, accountFn, preservationFn, notifyFn, postConfirmFn, preTokenFn];
+    const watchedTables = [users, readers, matches, tips, correspondence, preservation, rates];
+    // A metric-math alarm accepts at most 10 metrics. This stack has 11
+    // functions and 14 throttle series, so each alarm is one Metrics Insights
+    // query that names those resources. SEARCH() is rejected at deploy time.
+    // The query is a plain string: a token inside the expression makes CDK
+    // treat the placeholder as a metric id.
+    const concrete = (name: string | undefined, kind: string) => {
+      if (!name || name.includes("${") || name.includes("Token")) {
+        throw new Error(`${kind} name must be concrete for the alarm query`);
+      }
+      return name;
+    };
+    const insight = (select: string, schema: string, dimension: string, names: string[]) => new cloudwatch.MathExpression({
+      expression: `SELECT ${select} FROM SCHEMA("${schema}", ${dimension}) WHERE ${names
+        .map((name) => `${dimension} = '${name}'`)
+        .join(" OR ")}`,
       usingMetrics: {},
       period: cdk.Duration.minutes(5),
     });
@@ -684,34 +730,38 @@ export class StrangerThoughtsStack extends cdk.Stack {
     });
     alarm("Api5xx", `st-${stage}-api-5xx`, apiMetric("5xx"), 1);
     alarm("Api4xx", `st-${stage}-api-4xx`, apiMetric("4xx"), 50);
-    alarm("LambdaErrors", `st-${stage}-lambda-errors`, searchSum("AWS/Lambda", "FunctionName", "Errors"), 1);
-    alarm("LambdaThrottles", `st-${stage}-lambda-throttles`, searchSum("AWS/Lambda", "FunctionName", "Throttles"), 1);
+    const functionNames = watchedFunctions.map((fn) =>
+      concrete((fn.node.defaultChild as lambda.CfnFunction).functionName, "function"),
+    );
+    const tableNames = watchedTables.map((item) =>
+      concrete((item.node.defaultChild as dynamodb.CfnTable).tableName, "table"),
+    );
+    alarm("LambdaErrors", `st-${stage}-lambda-errors`, insight("SUM(Errors)", "AWS/Lambda", "FunctionName", functionNames), 1);
+    alarm("LambdaThrottles", `st-${stage}-lambda-throttles`, insight("SUM(Throttles)", "AWS/Lambda", "FunctionName", functionNames), 1);
     alarm(
       "LambdaConcurrency",
       `st-${stage}-lambda-concurrency`,
-      new cloudwatch.MathExpression({
-        expression: "SUM(SEARCH('{AWS/Lambda,FunctionName} MetricName=\"ConcurrentExecutions\"', 'Maximum', 300))",
-        usingMetrics: {},
-        period: cdk.Duration.minutes(5),
-      }),
+      insight("SUM(ConcurrentExecutions)", "AWS/Lambda", "FunctionName", functionNames),
       Math.ceil(reserved * 0.8),
     );
     alarm(
       "DynamoThrottles",
       `st-${stage}-dynamodb-throttles`,
       new cloudwatch.MathExpression({
-        expression: [
-          "SUM(SEARCH('{AWS/DynamoDB,TableName} MetricName=\"ReadThrottleEvents\"', 'Sum', 300))",
-          "SUM(SEARCH('{AWS/DynamoDB,TableName} MetricName=\"WriteThrottleEvents\"', 'Sum', 300))",
-        ].join("+"),
-        usingMetrics: {},
+        expression: "reads + writes",
+        usingMetrics: {
+          reads: insight("SUM(ReadThrottleEvents)", "AWS/DynamoDB", "TableName", tableNames),
+          writes: insight("SUM(WriteThrottleEvents)", "AWS/DynamoDB", "TableName", tableNames),
+        },
         period: cdk.Duration.minutes(5),
       }),
       1,
     );
 
     new cdk.CfnOutput(this, "SiteUrl", { value: `https://${distribution.distributionDomainName}` });
-    new cdk.CfnOutput(this, "ApiUrl", { value: httpApi.apiEndpoint });
+    new cdk.CfnOutput(this, "ApiUrl", {
+      value: props.certificateArn ? `https://${props.siteHost}/api` : httpApi.apiEndpoint,
+    });
     new cdk.CfnOutput(this, "UserPoolId", { value: pool.userPoolId });
     new cdk.CfnOutput(this, "UserPoolClientId", { value: client.userPoolClientId });
     new cdk.CfnOutput(this, "CognitoDomain", {
@@ -777,8 +827,10 @@ function table(
   sortKey: string | undefined,
   removal: cdk.RemovalPolicy,
   key: kms.IKey,
+  stage: string,
 ) {
   return new dynamodb.Table(stack, id, {
+    tableName: `st-${stage}-${id.toLowerCase()}`,
     partitionKey: { name: partitionKey, type: dynamodb.AttributeType.STRING },
     sortKey: sortKey ? { name: sortKey, type: dynamodb.AttributeType.STRING } : undefined,
     billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,

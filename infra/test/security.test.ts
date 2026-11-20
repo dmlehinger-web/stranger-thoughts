@@ -4,7 +4,7 @@ import { App, Aspects } from "aws-cdk-lib";
 import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { StrangerThoughtsStack } from "../lib/stack.js";
-import { contentSecurityPolicy } from "../lib/headers.js";
+import { contentSecurityPolicy, PERMISSIONS_POLICY } from "../lib/headers.js";
 
 function stack() {
   const app = new App();
@@ -74,6 +74,14 @@ test("synth keeps the bucket private and uses origin access control", () => {
   assert.match(headers, /strict-origin-when-cross-origin/);
   assert.match(headers, /ContentTypeOptions/);
   assert.match(headers, /63072000/);
+  assert.match(headers, /Permissions-Policy/);
+  assert.ok(headers.includes(PERMISSIONS_POLICY));
+  const robots = JSON.stringify(synthesized.findResources("AWS::CloudFront::Function"));
+  assert.ok(robots.includes("uri === roots[i]"));
+  assert.ok(robots.includes("noindex, noarchive"));
+  assert.match(distribution, /ApiDomain/);
+  const domains = JSON.stringify(synthesized.findResources("AWS::ApiGatewayV2::DomainName"));
+  assert.match(domains, /api\.preview\.invalid/);
 });
 
 test("only the address function can decrypt, and not with a wildcard", () => {
@@ -163,6 +171,17 @@ test("stripe stays in test mode and the default template stays inside the bounda
     assert.ok(names.includes(name), name);
   }
   assert.equal(Object.keys(alarms).length, 6);
+  const alarmBody = JSON.stringify(alarms);
+  assert.equal(alarmBody.includes("SEARCH("), false);
+  assert.match(alarmBody, /SELECT /);
+  assert.match(alarmBody, /SUM\(Errors\)/);
+  assert.match(alarmBody, /st-dev-health/);
+  assert.match(alarmBody, /SUM\(ReadThrottleEvents\)/);
+  assert.match(alarmBody, /SUM\(WriteThrottleEvents\)/);
+  const apis = synthesized.findResources("AWS::ApiGatewayV2::Api");
+  for (const api of Object.values(apis)) {
+    assert.equal(api.Properties?.DisableExecuteApiEndpoint, true);
+  }
   const routes = Object.values(synthesized.findResources("AWS::ApiGatewayV2::Route"));
   const open = routes
     .filter((route) => route.Properties?.AuthorizationType !== "JWT")
@@ -194,6 +213,56 @@ test("cdk-nag AwsSolutionsChecks has no unsuppressed findings", () => {
   const warnings = Annotations.fromStack(synthesized).findWarning("*", Match.anyValue());
   const lines = [...errors, ...warnings].map((item) => `${item.id} ${String(item.entry.data).slice(0, 180)}`);
   assert.deepEqual(lines, []);
+});
+
+test("data grants name the keys and the routes that read them", () => {
+  const synthesized = template();
+  const functions = synthesized.findResources("AWS::Lambda::Function");
+  const policies = synthesized.findResources("AWS::IAM::Policy");
+  const statementsFor = (functionName: string) => {
+    const fn = Object.values(functions).find((item) => item.Properties?.FunctionName === functionName);
+    assert.ok(fn, functionName);
+    const roleId = fn.Properties.Role["Fn::GetAtt"][0];
+    return Object.values(policies).flatMap((policy) => {
+      const roles = [].concat(policy.Properties?.Roles ?? []);
+      const attached = roles.some((role) => JSON.stringify(role).includes(roleId));
+      if (!attached) {
+        return [];
+      }
+      const statements = policy.Properties?.PolicyDocument?.Statement ?? [];
+      return Array.isArray(statements) ? statements : [statements];
+    });
+  };
+  const resourcesOf = (statement) => [].concat(statement.Resource ?? []).map((item) => JSON.stringify(item));
+  const actionsOf = (statement) => [].concat(statement.Action ?? []);
+  const matching = statementsFor("st-dev-matching");
+  assert.ok(matching.some((statement) =>
+    actionsOf(statement).includes("dynamodb:Query")
+    && resourcesOf(statement).some((resource) => resource.includes("index/ByReader"))
+  ));
+  const account = statementsFor("st-dev-account");
+  assert.ok(account.some((statement) =>
+    actionsOf(statement).includes("dynamodb:Query")
+    && resourcesOf(statement).some((resource) => resource.includes("Correspondence"))
+    && resourcesOf(statement).every((resource) => !resource.includes("index/"))
+  ));
+  const preservation = statementsFor("st-dev-preservation");
+  assert.ok(preservation.some((statement) => {
+    const actions = actionsOf(statement);
+    return ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:DeleteItem"]
+      .every((action) => actions.includes(action));
+  }));
+  const attributeLists = Object.values(policies).flatMap((policy) => {
+    const statements = policy.Properties?.PolicyDocument?.Statement ?? [];
+    return (Array.isArray(statements) ? statements : [statements])
+      .map((statement) => statement.Condition?.["ForAllValues:StringEquals"]?.["dynamodb:Attributes"])
+      .filter(Boolean);
+  });
+  assert.ok(attributeLists.length >= 4);
+  for (const attributes of attributeLists) {
+    assert.ok(attributes.includes("sk"), JSON.stringify(attributes));
+    assert.ok(attributes.includes("userId") || attributes.includes("readerId"), JSON.stringify(attributes));
+  }
 });
 
 test("cognito client has no secret and refresh rotation is on", () => {

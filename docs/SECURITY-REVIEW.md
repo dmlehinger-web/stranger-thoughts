@@ -122,17 +122,19 @@ Point-in-time recovery can retain ciphertext for up to 35 days after a delete. T
 - The builder tip is pay-what-you-want, with presets, and has no destination.
 - Amounts are 100 to 20000 cents.
 - Live mode: `enforce_stripe_mode` accepts `rk_test_` and `sk_test_` keys and rejects `rk_live_` and `sk_live_` unless the environment value is exactly `true`. The stack sets `STRIPE_ALLOW_LIVE=false`. There is no other switch.
-- The webhook checks `Stripe-Signature` (HMAC-SHA256 over `{timestamp}.{raw body}`, tolerance 300 seconds, multiple `v1` signatures accepted). Unsigned, stale, and bad signatures are 401. Processing is idempotent: a conditional put of `event#{id}` with `attribute_not_exists`. The parser does not surface a customer email or address from the event.
+- The webhook checks `Stripe-Signature` (HMAC-SHA256 over `{timestamp}.{raw body}`, tolerance 300 seconds, multiple `v1` signatures accepted). Unsigned, stale, and bad signatures are 401. A checkout is marked paid only when `payment_status` is `paid`, the tip row exists, and `checkoutSessionId` matches. The handler claims `event#{id}` with `attribute_not_exists`, and deletes that claim if the write fails, then returns 503 so Stripe can retry. The parser does not surface a customer email or address from the event.
 - Connect Express KYC is Stripe’s. This service stores the resulting account id and the payouts-ready flag.
 
 ## Edge
 
 - The site bucket blocks all public access, enforces SSL, uses bucket-owner-enforced ownership (no public ACLs), and is read through an origin access control. The template has no origin access identity.
-- Response headers: HSTS two years with subdomains and preload; the CSP from `infra/lib/headers.ts`; `nosniff`; frame deny; referrer `strict-origin-when-cross-origin`.
+- Response headers: HSTS two years with subdomains and preload; the CSP from `infra/lib/headers.ts`; `nosniff`; frame deny; referrer `strict-origin-when-cross-origin`; `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`.
 - CSP: `default-src 'self'`; `script-src 'self'` (no third-party script, no `'unsafe-inline'`); `object-src 'none'`; `base-uri 'self'`; `frame-ancestors 'none'`; `form-action 'self' https://checkout.stripe.com https://connect.stripe.com`. `connect-src` adds this user pool’s hosted-UI host and the regional `cognito-idp` host, because sign-up and the token exchange are browser calls. There is no `js.stripe.com` and no Google Fonts host. Fonts are the woff2 files in `frontend/fonts/`, under the SIL Open Font License (`frontend/fonts/OFL.txt`).
 - The HTML meta policy is a little wider on `connect-src` (a Cognito wildcard) so it does not intersect the header down to nothing. Browsers enforce both. `frame-ancestors` is sent as a header; a meta tag would ignore it. `frontend/devserver.py` sends the headers locally.
 - API CORS allows `https://${siteHost}` only.
-- The API origin speaks TLS 1.2 to API Gateway. API Gateway’s execute-api endpoint is TLS 1.2. Production synthesis requires an ACM certificate and sets the viewer policy to `TLSv1.2_2021`. A dev synth without `certificateArn` uses CloudFront’s default viewer certificate, which is the one case where this stack cannot raise the viewer minimum. Do not put real addresses on that distribution.
+- The API origin speaks TLS 1.2 to API Gateway. When `certificateArn` is set, the HTTP API sets `DisableExecuteApiEndpoint` and CloudFront’s `/api/*` origin is `api.<siteHost>` (the certificate has to cover that name). A dev synth without a certificate keeps the default execute-api origin so synthesis still has a working origin. Production synthesis requires an ACM certificate and sets the viewer policy to `TLSv1.2_2021`. A dev synth without `certificateArn` uses CloudFront’s default viewer certificate, which is the one case where this stack cannot raise the viewer minimum. Do not put real addresses on that distribution.
+- `X-Robots-Tag: noindex, noarchive` is added for `/write`, `/read`, `/auth`, and `/archive`, including the exact path with no trailing slash. `frontend/robots.txt` also disallows `/api/`.
+- The six alarms are Metrics Insights queries (`SELECT SUM(...)` / `SUM(ConcurrentExecutions)`) that name this stack’s functions and tables. No alarm expression uses `SEARCH()`. A metric-math alarm accepts at most ten metrics, and this stack has eleven functions.
 
 ## IAM
 
