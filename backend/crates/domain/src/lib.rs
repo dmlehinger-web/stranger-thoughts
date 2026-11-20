@@ -8,9 +8,13 @@ pub mod account;
 pub mod address;
 pub mod authz;
 pub mod checkout;
+pub mod correspondence;
 pub mod ids;
 pub mod matching;
 pub mod model;
+pub mod notice;
+pub mod preferences;
+pub mod preservation;
 pub mod rate_limit;
 pub mod redaction;
 pub mod reports;
@@ -18,6 +22,9 @@ pub mod rotate;
 pub mod tips;
 pub mod validation;
 pub mod webhook;
+
+/// Mailed-letter marks per account per day. Each mark can send at most one note.
+pub const DEFAULT_MAX_MAIL_MARKS_PER_DAY: u32 = 10;
 
 /// Largest JSON body a handler will read. API Gateway's own cap is higher;
 /// this is the application limit.

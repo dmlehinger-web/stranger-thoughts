@@ -37,18 +37,32 @@ pub fn live_gate_open(env_value: Option<&str>) -> bool {
     env_value == Some("true")
 }
 
+fn key_body_ok(rest: &str) -> bool {
+    rest.len() >= 8 && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Accept a test secret or a test restricted key. Live keys of either shape
+/// stay closed unless `allow_live` is exactly the environment gate.
 pub fn enforce_stripe_mode(secret_key: &str, allow_live: bool) -> Result<StripeMode, CheckoutError> {
     let key = secret_key.trim();
-    if let Some(rest) = key.strip_prefix("sk_test_") {
-        if rest.len() >= 8 && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Ok(StripeMode::Test);
+    for prefix in ["rk_test_", "sk_test_"] {
+        if let Some(rest) = key.strip_prefix(prefix) {
+            if key_body_ok(rest) {
+                return Ok(StripeMode::Test);
+            }
+            return Err(CheckoutError::UnusableKey);
         }
     }
-    if key.starts_with("sk_live_") {
-        if allow_live {
-            return Ok(StripeMode::Live);
+    for prefix in ["rk_live_", "sk_live_"] {
+        if let Some(rest) = key.strip_prefix(prefix) {
+            if !key_body_ok(rest) {
+                return Err(CheckoutError::UnusableKey);
+            }
+            if allow_live {
+                return Ok(StripeMode::Live);
+            }
+            return Err(CheckoutError::LiveBlocked);
         }
-        return Err(CheckoutError::LiveBlocked);
     }
     Err(CheckoutError::UnusableKey)
 }
@@ -218,5 +232,17 @@ mod tests {
         assert!(!live_gate_open(None));
         assert!(live_gate_open(Some("true")));
         assert!(enforce_stripe_mode("pk_test_12345678", false).is_err());
+        assert_eq!(
+            enforce_stripe_mode("rk_test_12345678", false).unwrap(),
+            StripeMode::Test
+        );
+        assert_eq!(
+            enforce_stripe_mode("rk_live_12345678", false),
+            Err(CheckoutError::LiveBlocked)
+        );
+        assert_eq!(
+            enforce_stripe_mode("rk_live_12345678", true).unwrap(),
+            StripeMode::Live
+        );
     }
 }

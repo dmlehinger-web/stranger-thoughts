@@ -7,8 +7,10 @@ use crate::http::ApiFailure;
 pub struct Aws {
     pub dynamo: aws_sdk_dynamodb::Client,
     pub kms: aws_sdk_kms::Client,
-    pub secrets: aws_sdk_secretsmanager::Client,
+    pub ssm: aws_sdk_ssm::Client,
     pub cognito: aws_sdk_cognitoidentityprovider::Client,
+    pub lambda: aws_sdk_lambda::Client,
+    pub ses: aws_sdk_ses::Client,
     pub http: reqwest::Client,
 }
 
@@ -24,8 +26,10 @@ impl Aws {
             Ok(Aws {
                 dynamo: aws_sdk_dynamodb::Client::new(&config),
                 kms: aws_sdk_kms::Client::new(&config),
-                secrets: aws_sdk_secretsmanager::Client::new(&config),
+                ssm: aws_sdk_ssm::Client::new(&config),
                 cognito: aws_sdk_cognitoidentityprovider::Client::new(&config),
+                lambda: aws_sdk_lambda::Client::new(&config),
+                ses: aws_sdk_ses::Client::new(&config),
                 http,
             })
         })

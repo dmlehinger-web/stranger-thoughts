@@ -10,13 +10,22 @@
     { "method": "GET", "path": "/writers/home" },
     { "method": "POST", "path": "/writers/rotate" },
     { "method": "POST", "path": "/matches/{matchId}/sent" },
+    { "method": "POST", "path": "/matches/{matchId}/mailed" },
+    { "method": "POST", "path": "/matches/{matchId}/received" },
     { "method": "GET", "path": "/matches/{matchId}/address" },
+    { "method": "POST", "path": "/preservation/private" },
+    { "method": "GET", "path": "/preservation/private" },
+    { "method": "DELETE", "path": "/preservation/private/{matchId}" },
+    { "method": "POST", "path": "/preservation/archive" },
+    { "method": "GET", "path": "/preservation/mine" },
     { "method": "POST", "path": "/readers/profile" },
     { "method": "GET", "path": "/readers/home" },
     { "method": "POST", "path": "/readers/payouts/link" },
     { "method": "POST", "path": "/readers/reports" },
     { "method": "POST", "path": "/tips/reader" },
     { "method": "POST", "path": "/tips/builder" },
+    { "method": "GET", "path": "/account/settings" },
+    { "method": "PUT", "path": "/account/settings" },
     { "method": "DELETE", "path": "/account" }
   ]
 }

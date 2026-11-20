@@ -65,26 +65,13 @@ On a project site, crawlers read `robots.txt` from the host root (`dmlehinger-we
 
 ## Custom domain, later
 
-The planned domain is `getstrangerthoughts.com`. It is not connected. This repository omits the `CNAME` file until DNS answers. Publishing from a branch treats that file as the custom domain, and GitHub Pages then redirects the `github.io` URL to it. Adding the file early would take the preview offline.
+The planned domain is `astrangerreads.com`, in Route 53, in front of the v2 CloudFront distribution. It is not connected. GitHub Pages keeps serving the waitlist from `https://dmlehinger-web.github.io/stranger-thoughts/` until that domain is actually serving (a later phase, not this change).
 
-Leave the preview on `https://dmlehinger-web.github.io/stranger-thoughts/` until the domain resolves.
+This repository omits the `CNAME` file until DNS answers. Publishing from a branch treats that file as the custom domain, and GitHub Pages then redirects the `github.io` URL to it. Adding the file early would take the preview offline.
 
-When DNS is ready, do the cutover in one commit:
+Leave the preview on `https://dmlehinger-web.github.io/stranger-thoughts/` until the domain resolves. Do not point the apex at GitHub Pages. The v2 hostname is the CloudFront distribution, after the certificate in `us-east-1` exists. See [docs/DEPLOY.md](docs/DEPLOY.md).
 
-1. At Porkbun, point the apex at GitHub Pages. Prefer an `ALIAS` or `ANAME` record for `@` to `dmlehinger-web.github.io` if Porkbun offers it. Otherwise use four `A` records for `@`:
-   - `185.199.108.153`
-   - `185.199.109.153`
-   - `185.199.110.153`
-   - `185.199.111.153`
-   - Optional `AAAA` records: `2606:50c0:8000::153`, `2606:50c0:8001::153`, `2606:50c0:8002::153`, `2606:50c0:8003::153`
-2. If you want `www`, add a `CNAME` for `www` to `dmlehinger-web.github.io`. The DNS `CNAME` is not the same thing as a `CNAME` file in the repo.
-3. Confirm the records answer (`dig getstrangerthoughts.com`) before changing the site.
-4. In `data/site.json`, set `domain_status` to `live`, `origin` to `https://getstrangerthoughts.com`, and `base_path` to `""`.
-5. Add a repository file named `CNAME` whose only line is `getstrangerthoughts.com`.
-6. Run `python3 scripts/build.py` and commit the JSON, the `CNAME` file, and the regenerated HTML, sitemap, and robots file together. Links drop the `/stranger-thoughts/` prefix in that build. The custom domain serves the site from `/`, so the prefix has to go at the same time as the `CNAME` file.
-7. In Pages settings, confirm the custom domain. Turn on **Enforce HTTPS** after the certificate is issued. That can take a while after DNS is correct.
-
-The build refuses a `CNAME` file while `domain_status` is `not_live`. It also refuses any mailing address other than `Mailing address coming soon`, a personal-inbox waitlist address, a social profile URL, a street address, an `http://` link, or a classic `<script>` (JSON-LD data blocks are the only scripts). Every generated page must include the referrer policy and the Content-Security-Policy. An outbound `https://` link must use `rel="noopener noreferrer"`. Change the mailing-address check in `scripts/build.py` only when a real, non-residential desk address exists.
+The build refuses a `CNAME` file while `domain_status` is `not_live`. It also refuses any mailing address other than `Mailing address coming soon`, a personal-inbox waitlist address, a social profile URL, a street address, an `http://` link, or a classic `<script>` (JSON-LD data blocks are the only scripts). Every generated page must include the referrer policy and the Content-Security-Policy. An outbound `https://` link must use `rel="noopener noreferrer"`. Change the mailing-address check in `scripts/build.py` only when a real, non-residential desk address exists. Generated pages must not mention `astrangerreads.com` while `domain_status` is `not_live`. The v2 pages under `frontend/` may.
 
 ## What this draft leaves for later
 

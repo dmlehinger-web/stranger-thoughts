@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="strict-origin-when-cross-origin">
-  <meta name="robots" content="noindex">
+  <meta name="robots" content="noindex, noarchive">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com https://connect.stripe.com">
   <title>Your letters — Stranger Thoughts</title>
   <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
@@ -22,6 +22,25 @@
       <h2>Letters you might receive</h2>
       <p class="quiet">Writer names only. Your mailing address is not listed here.</p>
       <ul class="letters" id="letters"></ul>
+      <details class="preserve">
+        <summary>Keep a private copy, or offer a reflection to the archive</summary>
+        <p class="quiet">This is not a place to type the letter you mail. A private copy stays on your account. An archive offer stays pending until a person curates it.</p>
+        <label>Match
+          <select id="preserve-match"></select>
+        </label>
+        <label>Words you want to keep
+          <textarea id="preserve-body" rows="5" maxlength="4000"></textarea>
+        </label>
+        <p>
+          <button class="btn btn-secondary" id="save-private" type="button">Save a private copy</button>
+          <button class="text-link" id="offer-archive" type="button">Offer to the archive</button>
+        </p>
+      </details>
+      <section class="account">
+        <h2>Account</h2>
+        <label class="sent"><input id="mail-alerts" type="checkbox" checked> Email me when a stranger marks a letter mailed</label>
+        <p class="quiet">Your verified email is never shown to the writer. Turn this off and the mailed-letter status stays on this page only.</p>
+      </section>
       <h2>Tips received</h2>
       <p class="display" id="tips">$18</p>
       <p class="quiet">Tips arrive through Stripe after a writer checks out. This preview does not move money.</p>

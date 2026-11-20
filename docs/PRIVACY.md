@@ -8,7 +8,11 @@ A writer account needs an email and a pseudonym. Optional descriptors are an age
 
 Age ranges start at 18. The service rejects under-13 and other child buckets and does not offer them in the form.
 
-A reader account needs an email, a pseudonym, and a mailing address so the writer matched to them can send a letter. The form recommends a PO box or a virtual mailbox. A street address is accepted and treated as highly sensitive personal information.
+A reader account needs an email, a pseudonym, and a mailing address so the writer matched to them can send a letter. The form recommends a PO box or a virtual mailbox. A street address is accepted and treated as highly sensitive personal information. Until a non-residential desk mailbox exists, the API does not return address plaintext. The page says “Mailing address coming soon.”
+
+The verified email is also used, unless the person turns it off, for a quiet note when a stranger marks a letter mailed. That note has no sender name, email, city, address, or letter text. The email is never shown to the stranger and is not included in the account-settings response. The setting is stored on the profile as `mailAlerts`. Missing means the note is on.
+
+A private copy and an archive offer are off unless the person chooses them. They are not the letter. Archive text stays pending and is not published until a person curates it. Preserved records do not store a street, an email, or a legal name. The public archive is generated static pages, not an unauthenticated API.
 
 ## Who can read a mailing address
 

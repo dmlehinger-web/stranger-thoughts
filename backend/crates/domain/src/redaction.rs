@@ -19,11 +19,43 @@ const SENSITIVE_KEYS: &[&str] = &[
     "refresh",
     "cvc",
     "pan",
+    "phone",
+    "street",
+    "city",
+    "legal",
+    "latitude",
+    "longitude",
 ];
 
 pub fn is_sensitive_key(key: &str) -> bool {
     let lowered = key.to_ascii_lowercase();
     SENSITIVE_KEYS.iter().any(|needle| lowered.contains(needle))
+}
+
+/// Walk a JSON value and return the first object key that would carry PII.
+pub fn find_pii_key(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if is_sensitive_key(key) {
+                    return Some(key.clone());
+                }
+                if let Some(found) = find_pii_key(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if let Some(found) = find_pii_key(item) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 pub fn redact_text(input: &str) -> String {

@@ -1,0 +1,8 @@
+title = "Stranger Thoughts"
+
+[allowlist]
+description = "Domain tests and the redaction sample use fake key shapes. They are not credentials."
+paths = [
+  '''backend/crates/domain/src/checkout.rs''',
+  '''backend/crates/domain/src/redaction.rs''',
+]

@@ -144,6 +144,19 @@ pub struct ReportRequest {
     pub reason: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreservationRequest {
+    pub match_id: String,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MailAlertsRequest {
+    pub mail_alerts: bool,
+}
+
 pub fn validate_pseudonym(value: &str) -> Result<String, ValidationError> {
     let trimmed = value.trim();
     let len = trimmed.chars().count();

@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Allow: /thoughts/
+Allow: /waitlist/
+Disallow: /write/
+Disallow: /read/
+Disallow: /auth/
+Disallow: /archive/

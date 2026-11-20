@@ -7,7 +7,13 @@ if (stage !== "dev" && stage !== "prod") {
   throw new Error("stage must be dev or prod");
 }
 
-new StrangerThoughtsStack(app, `StrangerThoughts-${stage}`, {
+function flag(name: string): boolean {
+  const value = app.node.tryGetContext(name);
+  return value === true || value === "true";
+}
+
+new StrangerThoughtsStack(app, `st-${stage}`, {
+  stackName: `st-${stage}`,
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: "us-east-1",
@@ -16,9 +22,17 @@ new StrangerThoughtsStack(app, `StrangerThoughts-${stage}`, {
   siteHost: app.node.tryGetContext("siteHost") ?? "preview.invalid",
   cognitoDomainPrefix:
     app.node.tryGetContext("cognitoDomainPrefix") ?? `stranger-thoughts-${stage}-preview`,
-  budgetEmail: app.node.tryGetContext("budgetEmail") ?? "budget-alerts@example.com",
-  enableWaf: app.node.tryGetContext("enableWaf") !== "false",
-  enableGuardDuty: app.node.tryGetContext("enableGuardDuty") === "true",
+  enableWaf: flag("enableWaf"),
+  enableBotControl: flag("enableBotControl"),
+  enableSesIdentity: flag("enableSesIdentity"),
+  sesEnabled: flag("sesEnabled"),
+  alertsTopicArn:
+    app.node.tryGetContext("alertsTopicArn") ??
+    "arn:aws:sns:us-east-1:204161828199:st-security-alerts",
+  sesIdentityArn:
+    app.node.tryGetContext("sesIdentityArn") ??
+    "arn:aws:ses:us-east-1:204161828199:identity/astrangerreads.com",
+  sesFromAddress: app.node.tryGetContext("sesFromAddress") ?? "desk@astrangerreads.com",
   maxRotatesPerDay: app.node.tryGetContext("maxRotatesPerDay") ?? "3",
   maxAddressReadsPerDay: app.node.tryGetContext("maxAddressReadsPerDay") ?? "40",
   certificateArn: app.node.tryGetContext("certificateArn"),

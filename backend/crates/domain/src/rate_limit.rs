@@ -8,6 +8,12 @@ pub enum RateLimitError {
     Limited,
 }
 
+pub fn hash_subject(kind: &str, raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{kind}\n{raw}").as_bytes());
+    format!("{kind}#{}", hex::encode(digest))
+}
+
 pub fn rotates_in_window(history: &[MatchRecord], writer: &WriterId, now: DateTime<Utc>) -> u32 {
     history
         .iter()
@@ -26,13 +32,20 @@ pub fn bump_daily_counter(
     now: DateTime<Utc>,
     max: u32,
 ) -> Result<(DateTime<Utc>, u32), RateLimitError> {
-    if max == 0 {
+    bump_window(existing, now, max, Duration::hours(24))
+}
+
+pub fn bump_window(
+    existing: Option<(DateTime<Utc>, u32)>,
+    now: DateTime<Utc>,
+    max: u32,
+    window: Duration,
+) -> Result<(DateTime<Utc>, u32), RateLimitError> {
+    if max == 0 || window <= Duration::zero() {
         return Err(RateLimitError::Limited);
     }
     match existing {
-        Some((start, count))
-            if now >= start && now.signed_duration_since(start) < Duration::hours(24) =>
-        {
+        Some((start, count)) if now >= start && now.signed_duration_since(start) < window => {
             if count >= max {
                 Err(RateLimitError::Limited)
             } else {

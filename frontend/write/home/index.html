@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="strict-origin-when-cross-origin">
-  <meta name="robots" content="noindex">
+  <meta name="robots" content="noindex, noarchive">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com https://connect.stripe.com">
   <title>Your stranger — Stranger Thoughts</title>
   <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
@@ -20,11 +20,33 @@
       <section>
         <p class="kicker">Your stranger</p>
         <h1 id="stranger-name">Cedar</h1>
-        <div class="address" id="address"></div>
+        <div class="address" id="address">
+          <p class="who">Mailing address coming soon</p>
+          <p class="note">A street address is not shown here. It stays hidden until a non-residential desk mailbox is ready.</p>
+        </div>
         <button class="btn btn-primary" id="rotate" type="button">Rotate to a new stranger</button>
         <p class="status" data-status></p>
         <h2>My letters</h2>
         <ul class="letters" id="letters"></ul>
+        <details class="preserve">
+          <summary>Keep a private copy, or offer it to the archive</summary>
+          <p class="quiet">This is not how the letter is sent. The paper letter is the letter. A private copy stays on your account. An archive offer waits for a person to curate it, and it is never published raw. Leave out emails, streets, and legal names.</p>
+          <label>Match
+            <select id="preserve-match"></select>
+          </label>
+          <label>Words you want to keep
+            <textarea id="preserve-body" rows="5" maxlength="4000"></textarea>
+          </label>
+          <p>
+            <button class="btn btn-secondary" id="save-private" type="button">Save a private copy</button>
+            <button class="text-link" id="offer-archive" type="button">Offer to the archive</button>
+          </p>
+        </details>
+        <section class="account">
+          <h2>Account</h2>
+          <label class="sent"><input id="mail-alerts" type="checkbox" checked> Email me when a stranger marks a letter mailed</label>
+          <p class="quiet">Your verified email is never shown to the stranger. It is used to confirm the account and, unless you turn this off, to send that mailed-letter note. With it off, the status stays on this page only.</p>
+        </section>
       </section>
       <section>
         <h2>How to send a letter</h2>
@@ -35,7 +57,8 @@
           <li>A PO box or virtual mailbox as the return address.</li>
           <li>Never a home address.</li>
         </ul>
-        <p class="quiet">The address on this page is for the letter you are sending now. Older matches stay in the log as a name, a date, and whether you sent it.</p>
+        <p class="colophon">A letter from the desk at Stranger Thoughts. Genuine attention, from the eyes of a stranger. astrangerreads.com</p>
+        <p class="quiet">Mailing address coming soon. Older matches stay in the log as a desk name, a date, and whether the letter is on its way. The status line does not include a name or a place.</p>
       </section>
     </main>
   </div>

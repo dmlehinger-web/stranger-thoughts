@@ -1,0 +1,105 @@
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: diff or deploy
+        required: true
+        type: choice
+        options:
+          - diff
+          - deploy
+      stage:
+        description: dev or prod
+        required: true
+        type: choice
+        default: prod
+        options:
+          - dev
+          - prod
+      siteHost:
+        description: Hostname people type
+        required: true
+        type: string
+      cognitoDomainPrefix:
+        description: Cognito hosted-domain prefix
+        required: true
+        type: string
+      certificateArn:
+        description: ACM certificate in us-east-1. Required for prod.
+        required: false
+        type: string
+
+jobs:
+  cdk:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: "1.100.0"
+      - name: Install cargo-lambda
+        run: pipx install cargo-lambda
+      - name: Build Rust Lambdas
+        working-directory: backend
+        run: cargo lambda build --release --arm64
+      - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
+        with:
+          role-to-assume: arn:aws:iam::204161828199:role/st-deploy
+          aws-region: us-east-1
+      - name: Install CDK dependencies
+        working-directory: infra
+        run: npm ci
+      - name: Diff
+        if: inputs.mode == 'diff'
+        working-directory: infra
+        env:
+          LAMBDA_ASSET_ROOT: ${{ github.workspace }}/backend/target/lambda
+        run: >
+          npx cdk diff
+          -c stage=${{ inputs.stage }}
+          -c siteHost=${{ inputs.siteHost }}
+          -c cognitoDomainPrefix=${{ inputs.cognitoDomainPrefix }}
+          -c certificateArn=${{ inputs.certificateArn }}
+      - name: Deploy, first pass
+        if: inputs.mode == 'deploy'
+        working-directory: infra
+        env:
+          LAMBDA_ASSET_ROOT: ${{ github.workspace }}/backend/target/lambda
+        run: >
+          npx cdk deploy --require-approval never --outputs-file cdk-outputs.json
+          -c stage=${{ inputs.stage }}
+          -c siteHost=${{ inputs.siteHost }}
+          -c cognitoDomainPrefix=${{ inputs.cognitoDomainPrefix }}
+          -c certificateArn=${{ inputs.certificateArn }}
+      - name: Render config from stack outputs
+        if: inputs.mode == 'deploy'
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          export COGNITO_DOMAIN="$(jq -r '.[].CognitoDomain' cdk-outputs.json)"
+          export COGNITO_CLIENT_ID="$(jq -r '.[].UserPoolClientId' cdk-outputs.json)"
+          export AWS_REGION=us-east-1
+          node scripts/render-config.mjs
+      - name: Deploy, second pass
+        if: inputs.mode == 'deploy'
+        working-directory: infra
+        env:
+          LAMBDA_ASSET_ROOT: ${{ github.workspace }}/backend/target/lambda
+        run: >
+          npx cdk deploy --require-approval never
+          -c stage=${{ inputs.stage }}
+          -c siteHost=${{ inputs.siteHost }}
+          -c cognitoDomainPrefix=${{ inputs.cognitoDomainPrefix }}
+          -c certificateArn=${{ inputs.certificateArn }}
+          -c productionConfig=true

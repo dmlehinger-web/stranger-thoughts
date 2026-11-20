@@ -1,13 +1,17 @@
 use std::collections::HashMap;
 
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
+use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem, Update};
 use aws_sdk_dynamodb::Client;
 use chrono::{DateTime, Utc};
 use stranger_domain::address::SealedAddress;
 use stranger_domain::ids::{MatchId, ReaderId, WriterId};
+use stranger_domain::authz::Role;
+use stranger_domain::correspondence::Turn;
 use stranger_domain::matching::MatchCandidate;
 use stranger_domain::model::MatchRecord;
+use stranger_domain::preservation::ArchiveKind;
 use stranger_domain::rate_limit::{self, RateLimitError};
 use stranger_domain::reports::{self, ReportError};
 use stranger_domain::validation::Demographics;
@@ -30,6 +34,9 @@ pub struct Store {
     readers: String,
     matches: String,
     tips: String,
+    correspondence: String,
+    preservation: String,
+    rates: String,
 }
 
 impl Store {
@@ -40,6 +47,9 @@ impl Store {
             readers: std::env::var("READERS_TABLE").unwrap_or_default(),
             matches: std::env::var("MATCHES_TABLE").unwrap_or_default(),
             tips: std::env::var("TIPS_TABLE").unwrap_or_default(),
+            correspondence: std::env::var("CORRESPONDENCE_TABLE").unwrap_or_default(),
+            preservation: std::env::var("PRESERVATION_TABLE").unwrap_or_default(),
+            rates: std::env::var("RATE_TABLE").unwrap_or_default(),
         }
     }
 
@@ -538,6 +548,353 @@ impl Store {
         Ok(())
     }
 
+    pub async fn turns_for_match(&self, match_id: &MatchId) -> Result<Vec<Turn>, StoreError> {
+        let page = self
+            .client
+            .query()
+            .table_name(&self.correspondence)
+            .key_condition_expression("matchId = :match AND begins_with(sk, :prefix)")
+            .expression_attribute_values(":match", s(match_id.as_str()))
+            .expression_attribute_values(":prefix", s("turn#"))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|_| StoreError)?;
+        let mut turns: Vec<Turn> = page
+            .items()
+            .iter()
+            .map(items::turn_from_item)
+            .collect::<Result<_, _>>()?;
+        turns.sort_by_key(|turn| turn.sequence);
+        Ok(turns)
+    }
+
+    pub async fn turns_for_matches(
+        &self,
+        ids: &[MatchId],
+    ) -> Result<std::collections::HashMap<String, Vec<Turn>>, StoreError> {
+        let mut map = std::collections::HashMap::new();
+        for id in ids {
+            map.insert(id.as_str().to_string(), self.turns_for_match(id).await?);
+        }
+        Ok(map)
+    }
+
+    /// Returns true when this call created the turn. A false result means the
+    /// turn already existed, so the caller must not send another notice.
+    pub async fn put_turn_if_absent(&self, match_id: &MatchId, turn: &Turn) -> Result<bool, StoreError> {
+        let result = self
+            .client
+            .put_item()
+            .table_name(&self.correspondence)
+            .set_item(Some(items::turn_item(match_id.as_str(), turn)))
+            .condition_expression("attribute_not_exists(sk)")
+            .send()
+            .await;
+        conditional_put(result)
+    }
+
+    pub async fn mark_turn_received(
+        &self,
+        match_id: &MatchId,
+        sequence: u32,
+        at: DateTime<Utc>,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.correspondence)
+            .key("matchId", s(match_id.as_str()))
+            .key("sk", s(items::turn_sk(sequence)))
+            .update_expression("SET receivedAt = :at")
+            .condition_expression("attribute_exists(mailedAt) AND attribute_not_exists(receivedAt)")
+            .expression_attribute_values(":at", s(at.to_rfc3339()))
+            .send()
+            .await;
+        conditional_update(result)
+    }
+
+    /// One dispatch per turn. A second caller loses the conditional write and must not send.
+    pub async fn claim_notice_dispatch(
+        &self,
+        match_id: &str,
+        sequence: u32,
+        at: DateTime<Utc>,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.correspondence)
+            .key("matchId", s(match_id))
+            .key("sk", s(items::turn_sk(sequence)))
+            .update_expression("SET noticeDispatchAt = :at")
+            .condition_expression("attribute_exists(noticeClaimedAt) AND attribute_not_exists(noticeDispatchAt)")
+            .expression_attribute_values(":at", s(at.to_rfc3339()))
+            .send()
+            .await;
+        conditional_update(result)
+    }
+
+    pub async fn mark_notice_sent(
+        &self,
+        match_id: &str,
+        sequence: u32,
+        at: DateTime<Utc>,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.correspondence)
+            .key("matchId", s(match_id))
+            .key("sk", s(items::turn_sk(sequence)))
+            .update_expression("SET noticeSentAt = :at")
+            .condition_expression("attribute_exists(noticeClaimedAt) AND attribute_not_exists(noticeSentAt)")
+            .expression_attribute_values(":at", s(at.to_rfc3339()))
+            .send()
+            .await;
+        conditional_update(result)
+    }
+
+    pub async fn bump_limit(
+        &self,
+        subject: &str,
+        now: DateTime<Utc>,
+        max: u32,
+        window: chrono::Duration,
+    ) -> Result<(), ApiFailure> {
+        if subject.contains('@') || subject.contains(' ') || subject.len() > 80 {
+            return Err(ApiFailure::Invalid);
+        }
+        let existing = self
+            .get_item(&self.rates, "subject", subject, "sk", "window", None)
+            .await
+            .map_err(|_| ApiFailure::Invalid)?;
+        let parsed = existing.as_ref().and_then(|item| {
+            let start = attr_s(item, "windowStart")?;
+            let count = attr_n_u64(item, "count") as u32;
+            let start = DateTime::parse_from_rfc3339(&start).ok()?.with_timezone(&Utc);
+            Some((start, count))
+        });
+        let (start, count) = rate_limit::bump_window(parsed, now, max, window).map_err(|_| ApiFailure::RateLimited)?;
+        let ttl = (start + window + chrono::Duration::hours(1)).timestamp();
+        self.client
+            .put_item()
+            .table_name(&self.rates)
+            .item("subject", s(subject))
+            .item("sk", s("window"))
+            .item("windowStart", s(start.to_rfc3339()))
+            .item("count", AttributeValue::N(count.to_string()))
+            .item("ttl", AttributeValue::N(ttl.to_string()))
+            .send()
+            .await
+            .map_err(|_| ApiFailure::Invalid)?;
+        Ok(())
+    }
+
+    pub async fn save_private_copy(
+        &self,
+        owner_id: &str,
+        match_id: &str,
+        body: &str,
+        saved_at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        self.client
+            .put_item()
+            .table_name(&self.preservation)
+            .item("ownerId", s(owner_id))
+            .item("sk", s(format!("copy#{match_id}")))
+            .item("matchId", s(match_id))
+            .item("body", s(body))
+            .item("savedAt", s(saved_at.to_rfc3339()))
+            .send()
+            .await
+            .map_err(|_| StoreError)?;
+        Ok(())
+    }
+
+    pub async fn list_owned(
+        &self,
+        owner_id: &str,
+        prefix: &str,
+        limit: i32,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<HashMap<String, AttributeValue>>, Option<String>), StoreError> {
+        if let Some(cursor) = cursor {
+            if !cursor.starts_with(prefix) {
+                return Err(StoreError);
+            }
+        }
+        let mut request = self
+            .client
+            .query()
+            .table_name(&self.preservation)
+            .key_condition_expression("ownerId = :owner AND begins_with(sk, :prefix)")
+            .expression_attribute_values(":owner", s(owner_id))
+            .expression_attribute_values(":prefix", s(prefix))
+            .limit(limit)
+            .consistent_read(true);
+        if let Some(cursor) = cursor {
+            request = request
+                .exclusive_start_key("ownerId", s(owner_id))
+                .exclusive_start_key("sk", s(cursor));
+        }
+        let page = request.send().await.map_err(|_| StoreError)?;
+        let next = page.last_evaluated_key().and_then(|key| attr_s(key, "sk"));
+        Ok((page.items().to_vec(), next))
+    }
+
+    pub async fn delete_owned_sk(&self, owner_id: &str, sk: &str) -> Result<(), StoreError> {
+        self.client
+            .delete_item()
+            .table_name(&self.preservation)
+            .key("ownerId", s(owner_id))
+            .key("sk", s(sk))
+            .send()
+            .await
+            .map_err(|_| StoreError)?;
+        Ok(())
+    }
+
+    pub async fn archive_body(&self, owner_id: &str, match_id: &str) -> Result<Option<String>, StoreError> {
+        let item = self
+            .get_item(
+                &self.preservation,
+                "ownerId",
+                owner_id,
+                "sk",
+                &format!("archive#{match_id}"),
+                Some("body"),
+            )
+            .await?;
+        Ok(item.as_ref().and_then(|row| attr_s(row, "body")))
+    }
+
+    pub async fn save_archive_submission(
+        &self,
+        owner_id: &str,
+        match_id: &str,
+        kind: ArchiveKind,
+        body: &str,
+        saved_at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        self.client
+            .put_item()
+            .table_name(&self.preservation)
+            .item("ownerId", s(owner_id))
+            .item("sk", s(format!("archive#{match_id}")))
+            .item("matchId", s(match_id))
+            .item("kind", s(kind.as_str()))
+            .item("body", s(body))
+            .item("status", s("pending"))
+            .item("curated", AttributeValue::Bool(false))
+            .item("savedAt", s(saved_at.to_rfc3339()))
+            .send()
+            .await
+            .map_err(|_| StoreError)?;
+        Ok(())
+    }
+
+    pub async fn pair_exists(&self, match_id: &str) -> Result<bool, StoreError> {
+        let item = self
+            .get_item(&self.preservation, "ownerId", "PAIR", "sk", match_id, Some("status"))
+            .await?;
+        Ok(item.is_some())
+    }
+
+    /// Queue a pair for curation. Both texts are already screened. The row is
+    /// never served by a public route. `curated` stays false.
+    pub async fn queue_pair(
+        &self,
+        match_id: &str,
+        thought: &str,
+        reflection: &str,
+        writer_id: &str,
+        reader_id: &str,
+        saved_at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let result = self
+            .client
+            .put_item()
+            .table_name(&self.preservation)
+            .item("ownerId", s("PAIR"))
+            .item("sk", s(match_id))
+            .item("thought", s(thought))
+            .item("reflection", s(reflection))
+            .item("status", s("pending"))
+            .item("curated", AttributeValue::Bool(false))
+            .item("writerOwnerId", s(writer_id))
+            .item("readerOwnerId", s(reader_id))
+            .item("savedAt", s(saved_at.to_rfc3339()))
+            .condition_expression("attribute_not_exists(sk)")
+            .send()
+            .await;
+        let _ = conditional_put(result)?;
+        Ok(())
+    }
+
+    pub async fn mail_alerts_enabled(&self, role: Role, user_id: &str) -> Result<bool, StoreError> {
+        let (table, key_name) = match role {
+            Role::Writer => (self.users.as_str(), "userId"),
+            Role::Reader => (self.readers.as_str(), "readerId"),
+        };
+        let item = self
+            .get_item(table, key_name, user_id, "sk", "PROFILE", Some("mailAlerts"))
+            .await?;
+        let stored = item
+            .as_ref()
+            .and_then(|row| row.get("mailAlerts"))
+            .and_then(|value| value.as_bool().ok())
+            .copied();
+        Ok(stranger_domain::preferences::mail_alerts_enabled(stored))
+    }
+
+    pub async fn set_mail_alerts(&self, role: Role, user_id: &str, enabled: bool) -> Result<(), StoreError> {
+        let (table, key_name) = match role {
+            Role::Writer => (self.users.as_str(), "userId"),
+            Role::Reader => (self.readers.as_str(), "readerId"),
+        };
+        self.client
+            .update_item()
+            .table_name(table)
+            .key(key_name, s(user_id))
+            .key("sk", s("PROFILE"))
+            .update_expression("SET mailAlerts = :enabled")
+            .condition_expression("attribute_exists(sk)")
+            .expression_attribute_values(":enabled", AttributeValue::Bool(enabled))
+            .send()
+            .await
+            .map_err(|_| StoreError)?;
+        Ok(())
+    }
+
+    pub async fn delete_owner_preservation(&self, owner_id: &str) -> Result<(), StoreError> {
+        for prefix in ["copy#", "archive#"] {
+            let mut cursor = None;
+            loop {
+                let (items, next) = self.list_owned(owner_id, prefix, 20, cursor.as_deref()).await?;
+                for item in &items {
+                    let sk = attr_s(item, "sk").ok_or(StoreError)?;
+                    self.delete_owned_sk(owner_id, &sk).await?;
+                    if let Some(match_id) = sk.strip_prefix("archive#") {
+                        self.client
+                            .delete_item()
+                            .table_name(&self.preservation)
+                            .key("ownerId", s("PAIR"))
+                            .key("sk", s(match_id))
+                            .send()
+                            .await
+                            .map_err(|_| StoreError)?;
+                    }
+                }
+                match next {
+                    Some(value) => cursor = Some(value),
+                    None => break,
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn query_matches(
         &self,
         key_name: &str,
@@ -579,5 +936,49 @@ impl Store {
         }
         let output = request.send().await.map_err(|_| StoreError)?;
         Ok(output.item)
+    }
+}
+
+fn conditional_put(
+    result: Result<
+        aws_sdk_dynamodb::operation::put_item::PutItemOutput,
+        aws_sdk_dynamodb::error::SdkError<PutItemError, aws_sdk_dynamodb::config::http::HttpResponse>,
+    >,
+) -> Result<bool, StoreError> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            let duplicate = error
+                .as_service_error()
+                .map(PutItemError::is_conditional_check_failed_exception)
+                .unwrap_or(false);
+            if duplicate {
+                Ok(false)
+            } else {
+                Err(StoreError)
+            }
+        }
+    }
+}
+
+fn conditional_update(
+    result: Result<
+        aws_sdk_dynamodb::operation::update_item::UpdateItemOutput,
+        aws_sdk_dynamodb::error::SdkError<UpdateItemError, aws_sdk_dynamodb::config::http::HttpResponse>,
+    >,
+) -> Result<bool, StoreError> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            let duplicate = error
+                .as_service_error()
+                .map(UpdateItemError::is_conditional_check_failed_exception)
+                .unwrap_or(false);
+            if duplicate {
+                Ok(false)
+            } else {
+                Err(StoreError)
+            }
+        }
     }
 }

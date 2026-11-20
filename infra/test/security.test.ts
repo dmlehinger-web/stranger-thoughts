@@ -1,24 +1,33 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { App } from "aws-cdk-lib";
-import { Template } from "aws-cdk-lib/assertions";
+import { App, Aspects } from "aws-cdk-lib";
+import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
+import { AwsSolutionsChecks } from "cdk-nag";
 import { StrangerThoughtsStack } from "../lib/stack.js";
 import { contentSecurityPolicy } from "../lib/headers.js";
 
-function template() {
+function stack() {
   const app = new App();
-  const stack = new StrangerThoughtsStack(app, "Test", {
+  return new StrangerThoughtsStack(app, "Test", {
+    env: { account: "204161828199", region: "us-east-1" },
     stage: "dev",
     siteHost: "preview.invalid",
     cognitoDomainPrefix: "stranger-thoughts-dev-preview",
-    budgetEmail: "budget-alerts@example.com",
-    enableWaf: true,
-    enableGuardDuty: false,
+    enableWaf: false,
+    enableBotControl: false,
+    enableSesIdentity: false,
+    sesEnabled: false,
+    alertsTopicArn: "arn:aws:sns:us-east-1:204161828199:st-security-alerts",
+    sesIdentityArn: "arn:aws:ses:us-east-1:204161828199:identity/astrangerreads.com",
+    sesFromAddress: "desk@astrangerreads.com",
     maxRotatesPerDay: "3",
     maxAddressReadsPerDay: "40",
-    certificateArn: "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000",
+    certificateArn: "arn:aws:acm:us-east-1:204161828199:certificate/00000000-0000-0000-0000-000000000000",
   });
-  return Template.fromStack(stack);
+}
+
+function template() {
+  return Template.fromStack(stack());
 }
 
 test("content security policy names the required directives", () => {
@@ -84,9 +93,13 @@ test("only the address function can decrypt, and not with a wildcard", () => {
         assert.equal(resources.includes("*"), false, JSON.stringify(statement));
       }
       if (actions.includes("kms:Decrypt")) {
-        decryptRoles.push(JSON.stringify(statement.Resource));
+        decryptRoles.push(statement);
         assert.equal(actions.includes("kms:GenerateDataKey"), false);
       }
+      if (actions.some((action: string) => action.startsWith("ssm:"))) {
+        assert.deepEqual(actions, ["ssm:GetParameter"]);
+      }
+      assert.equal(actions.some((action: string) => String(action).startsWith("secretsmanager:")), false);
       if (actions.some((action: string) => action.startsWith("dynamodb:"))) {
         for (const resource of resources) {
           assert.notEqual(resource, "*");
@@ -94,26 +107,93 @@ test("only the address function can decrypt, and not with a wildcard", () => {
       }
     }
   }
-  assert.equal(decryptRoles.length, 1);
+  const plainDecrypt = decryptRoles.filter((statement) => !JSON.stringify(statement).includes("kms:ViaService"));
+  const viaDecrypt = decryptRoles.filter((statement) => JSON.stringify(statement).includes("kms:ViaService"));
+  assert.equal(plainDecrypt.length, 1);
+  assert.ok(viaDecrypt.length >= 1);
+  for (const statement of viaDecrypt) {
+    assert.match(JSON.stringify(statement), /ssm\.us-east-1\.amazonaws\.com/);
+  }
 });
 
-test("stripe live mode is hard-coded off and the budget is 20 dollars", () => {
+test("stripe stays in test mode and the default template stays inside the boundary", () => {
   const synthesized = template();
-  const functions = synthesized.findResources("AWS::Lambda::Function");
-  const body = JSON.stringify(functions);
+  assert.equal(stack().stackName, "st-dev");
+  const body = JSON.stringify(synthesized.toJSON());
   assert.match(body, /STRIPE_ALLOW_LIVE/);
-  assert.match(body, /"false"/);
+  assert.match(body, /\/st\/stripe\/api-key/);
+  assert.match(body, /\/st\/stripe\/webhook-secret/);
   assert.equal(body.includes("sk_live_"), false);
   assert.equal(body.includes("sk_test_"), false);
-  synthesized.hasResourceProperties("AWS::Budgets::Budget", {
-    Budget: {
-      BudgetLimit: { Amount: 20, Unit: "USD" },
-      BudgetType: "COST",
-      TimeUnit: "MONTHLY",
-    },
-  });
-  synthesized.resourceCountIs("AWS::WAFv2::WebACL", 1);
+  synthesized.resourceCountIs("AWS::WAFv2::WebACL", 0);
   synthesized.resourceCountIs("AWS::KMS::Key", 1);
+  synthesized.resourceCountIs("AWS::Budgets::Budget", 0);
+  synthesized.resourceCountIs("AWS::CloudTrail::Trail", 0);
+  synthesized.resourceCountIs("AWS::GuardDuty::Detector", 0);
+  synthesized.resourceCountIs("AWS::SecretsManager::Secret", 0);
+  synthesized.resourceCountIs("AWS::SSM::Parameter", 0);
+  synthesized.resourceCountIs("AWS::SES::EmailIdentity", 0);
+  synthesized.resourceCountIs("AWS::SES::ConfigurationSet", 0);
+  synthesized.resourceCountIs("AWS::SNS::Topic", 0);
+  synthesized.resourceCountIs("AWS::SNS::Subscription", 0);
+  const roles = synthesized.findResources("AWS::IAM::Role");
+  for (const role of Object.values(roles)) {
+    assert.match(JSON.stringify(role.Properties?.PermissionsBoundary ?? ""), /st-boundary/);
+  }
+  const functions = synthesized.findResources("AWS::Lambda::Function");
+  for (const fn of Object.values(functions)) {
+    assert.ok(Number(fn.Properties?.ReservedConcurrentExecutions) >= 1);
+  }
+  const tables = synthesized.findResources("AWS::DynamoDB::Table");
+  assert.ok(Object.keys(tables).length >= 7);
+  for (const item of Object.values(tables)) {
+    assert.equal(item.Properties?.DeletionProtectionEnabled, true);
+    assert.equal(item.Properties?.SSESpecification?.SSEType, "KMS");
+  }
+  const alarms = synthesized.findResources("AWS::CloudWatch::Alarm");
+  const names = Object.values(alarms).map((item) => item.Properties?.AlarmName);
+  for (const name of [
+    "st-dev-api-5xx",
+    "st-dev-api-4xx",
+    "st-dev-lambda-errors",
+    "st-dev-lambda-throttles",
+    "st-dev-lambda-concurrency",
+    "st-dev-dynamodb-throttles",
+  ]) {
+    assert.ok(names.includes(name), name);
+  }
+  assert.equal(Object.keys(alarms).length, 6);
+  const routes = Object.values(synthesized.findResources("AWS::ApiGatewayV2::Route"));
+  const open = routes
+    .filter((route) => route.Properties?.AuthorizationType !== "JWT")
+    .map((route) => route.Properties?.RouteKey)
+    .sort();
+  assert.deepEqual(open, ["GET /health", "POST /webhooks/stripe"]);
+});
+
+test("cdk-nag AwsSolutionsChecks has no unsuppressed findings", () => {
+  const app = new App();
+  Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));
+  const synthesized = new StrangerThoughtsStack(app, "Nag", {
+    env: { account: "204161828199", region: "us-east-1" },
+    stage: "dev",
+    siteHost: "preview.invalid",
+    cognitoDomainPrefix: "stranger-thoughts-dev-preview",
+    enableWaf: false,
+    enableBotControl: false,
+    enableSesIdentity: false,
+    sesEnabled: false,
+    alertsTopicArn: "arn:aws:sns:us-east-1:204161828199:st-security-alerts",
+    sesIdentityArn: "arn:aws:ses:us-east-1:204161828199:identity/astrangerreads.com",
+    sesFromAddress: "desk@astrangerreads.com",
+    maxRotatesPerDay: "3",
+    maxAddressReadsPerDay: "40",
+    certificateArn: "arn:aws:acm:us-east-1:204161828199:certificate/00000000-0000-0000-0000-000000000000",
+  });
+  const errors = Annotations.fromStack(synthesized).findError("*", Match.anyValue());
+  const warnings = Annotations.fromStack(synthesized).findWarning("*", Match.anyValue());
+  const lines = [...errors, ...warnings].map((item) => `${item.id} ${String(item.entry.data).slice(0, 180)}`);
+  assert.deepEqual(lines, []);
 });
 
 test("cognito client has no secret and refresh rotation is on", () => {
@@ -121,7 +201,6 @@ test("cognito client has no secret and refresh rotation is on", () => {
   synthesized.hasResourceProperties("AWS::Cognito::UserPoolClient", {
     GenerateSecret: false,
     AllowedOAuthFlows: ["code"],
-    GenerateSecret: false,
     EnableTokenRevocation: true,
     AccessTokenValidity: 15,
     RefreshTokenRotation: { Feature: "ENABLED" },

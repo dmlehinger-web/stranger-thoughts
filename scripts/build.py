@@ -186,7 +186,7 @@ if SITE["domain_status"] != "live":
     if ORIGIN != "https://dmlehinger-web.github.io" or BASE != "/stranger-thoughts":
         die("keep origin and base_path on the github.io project URL until the domain is live")
     if (ROOT / "CNAME").exists():
-        die("remove CNAME until getstrangerthoughts.com DNS is live; it would break the github.io preview")
+        die("remove CNAME until " + SITE["planned_domain"] + " DNS is live; it would break the github.io preview")
 else:
     if ORIGIN != "https://" + SITE["planned_domain"] or BASE != "":
         die("a live domain serves from https://<planned_domain>/ with an empty base_path")
@@ -809,7 +809,7 @@ def verify(pages: dict[str, str], sitemap: str, robots: str) -> None:
             problems.append(f"{relative} links a social profile")
         if STREET_RE.search(page) or POBOX_RE.search(page):
             problems.append(f"{relative} contains a street address")
-        if SITE["domain_status"] != "live" and "getstrangerthoughts.com" in lowered:
+        if SITE["domain_status"] != "live" and SITE["planned_domain"] in lowered:
             problems.append(f"{relative} mentions the planned domain before it is live")
         if "not an AI" not in page or "waitlist only" not in lowered:
             problems.append(f"{relative} is missing the honesty note or waitlist line")
@@ -989,7 +989,112 @@ def main() -> None:
     write_text(ROOT / "sitemap.xml", sitemap)
     write_text(ROOT / "robots.txt", robots)
     clean_stale_posts({post["slug"] for post in POSTS})
+    emit_v2()
     print(f"Built {len(pages) - 1} public pages, 404.html, sitemap.xml, and robots.txt")
+
+
+V2_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; "
+    "img-src 'self'; connect-src 'self' https://*.amazoncognito.com "
+    "https://cognito-idp.us-east-1.amazonaws.com; object-src 'none'; "
+    "base-uri 'self'; form-action 'self' https://checkout.stripe.com https://connect.stripe.com"
+)
+
+
+def v2_page(title: str, body: str, depth: int, robots: str) -> str:
+    prefix = "../" * depth
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="{robots}">
+  <meta http-equiv="Content-Security-Policy" content="{V2_CSP}">
+  <title>{esc(title)} — Stranger Thoughts</title>
+  <link rel="icon" href="{prefix}favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="{prefix}css/app.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <div class="page prose">
+    <header class="top">
+      <a class="brand" href="{prefix}"><span>Stranger</span> <em>Thoughts</em></a>
+    </header>
+    <main id="content">
+{body}
+      <p class="quiet">Mailing address coming soon.</p>
+      <p class="hint"><a href="{prefix}">Back to the desk</a></p>
+    </main>
+  </div>
+</body>
+</html>
+"""
+
+
+def emit_v2() -> None:
+    mission = "To preserve and provide genuine human attention to thoughts, stories, ideas, and experiences from the eyes of a stranger."
+    prompt = json.loads((ROOT / "data" / "prompt.json").read_text(encoding="utf-8"))
+    landing = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    writer = (ROOT / "frontend" / "write" / "home" / "index.html").read_text(encoding="utf-8")
+    if mission not in landing or prompt["question"] not in landing:
+        die("frontend/index.html is missing the mission or the weekly prompt")
+    if "A letter from the desk at Stranger Thoughts" not in writer:
+        die("the writer home is missing the colophon")
+    thoughts = json.loads((ROOT / "data" / "thoughts.json").read_text(encoding="utf-8"))
+    items = []
+    for post in POSTS:
+        items.append(f'      <li><a href="{esc(post["slug"])}/">{esc(post["title"])}</a></li>')
+    intro = "\n".join(f"      <p>{esc(line)}</p>" for line in thoughts["intro"])
+    index_body = (
+        f"      <h1>{esc(thoughts['title'])}</h1>\n"
+        f"{intro}\n"
+        "      <ul>\n" + "\n".join(items) + "\n      </ul>\n"
+        "      <p>A real human, not an AI, reads. This room is waitlist only.</p>\n"
+    )
+    write_text(ROOT / "frontend" / "thoughts" / "index.html", v2_page("Thoughts", index_body, 1, "index, follow"))
+    for post in POSTS:
+        blocks = []
+        for block in post["blocks"]:
+            if block["type"] == "p":
+                blocks.append(f"      <p>{esc(block['text'])}</p>")
+        body = (
+            f"      <p class=\"kicker\">{esc(post['kicker'])}</p>\n"
+            f"      <h1>{esc(post['title'])}</h1>\n"
+            + "\n".join(blocks) + "\n"
+            + "      <p>A real human, not an AI, reads. This room is waitlist only.</p>\n"
+        )
+        write_text(
+            ROOT / "frontend" / "thoughts" / post["slug"] / "index.html",
+            v2_page(post["title"], body, 2, "index, follow"),
+        )
+    wait = json.loads((ROOT / "data" / "waitlist.json").read_text(encoding="utf-8"))
+    wait_body = f"      <h1>{esc(wait['title'])}</h1>\n" + "\n".join(
+        f"      <p>{esc(line)}</p>" for line in wait["intro"]
+    ) + "\n      <p>A real human, not an AI, reads. This page is waitlist only.</p>\n"
+    write_text(ROOT / "frontend" / "waitlist" / "index.html", v2_page("Waitlist", wait_body, 1, "index, follow"))
+    published = []
+    archive_dir = ROOT / "data" / "archive"
+    if archive_dir.exists():
+        for path in sorted(archive_dir.glob("*.json")):
+            if path.name.startswith("_"):
+                continue
+            item = json.loads(path.read_text(encoding="utf-8"))
+            if item.get("curated") is True and item.get("status") == "approved":
+                published.append(item)
+    if published:
+        rows = "\n".join(
+            f"      <article><h2>A thought</h2><p>{esc(item['thought'])}</p><h2>A reflection</h2><p>{esc(item['reflection'])}</p></article>"
+            for item in published
+        )
+    else:
+        rows = (
+            "      <p>Nothing is published yet. A pair appears here only after both people opt in "
+            "and a person curates it. Raw letters are not posted.</p>\n"
+        )
+    archive_body = "      <h1>Stranger Archive</h1>\n" + rows
+    write_text(ROOT / "frontend" / "archive" / "index.html", v2_page("Stranger Archive", archive_body, 1, "noindex, noarchive"))
+    print(f"Wrote v2 thoughts, waitlist, and archive ({len(published)} curated pairs)")
 
 
 if __name__ == "__main__":

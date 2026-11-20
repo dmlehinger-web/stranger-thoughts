@@ -4,16 +4,15 @@ This repository does not deploy itself. `infra/package.json` makes `npm run depl
 
 ## What you need before the first deploy
 
-1. An AWS account, and an IAM principal that can bootstrap CDK and deploy this stack. The stack is `us-east-1` because the CloudFront web ACL has to live there.
+1. AWS account `204161828199`, region `us-east-1` only. The stack name is `st-<stage>`. Every role uses the permissions boundary `st-boundary`.
 2. A unique Cognito domain prefix: `-c cognitoDomainPrefix=your-prefix`.
-3. An email address that can receive the budget alarm: `-c budgetEmail=you@example.com`.
-4. For a production stage, an ACM certificate in `us-east-1` for the site hostname: `-c certificateArn=arn:aws:acm:us-east-1:ACCOUNT:certificate/ID`. Production synthesis refuses to run without it, so CloudFront can require TLS 1.2 (`TLSv1.2_2021`). A dev stage can synthesize without a certificate. That dev distribution uses CloudFront’s default viewer certificate. Attach a certificate before you send real mail.
-5. The site hostname, passed as `-c siteHost=`. Use the hostname people will type. Callback URLs, CORS, and `APP_BASE_URL` are built from it. If you do not know the CloudFront domain yet, deploy once with a hostname you control, or deploy, read the `SiteUrl` output, set `siteHost` to that domain, and deploy again. Sign-in will not match the browser origin until `siteHost` is the origin people use.
-6. Stripe **test** secret key and webhook signing secret. Write them to the two Secrets Manager secrets the stack creates. Do not commit them, paste them into a pull request, or leave them in a shell history you share.
-7. `cargo-lambda` (or an equivalent cross-compile) that produces `linux/arm64` binaries for the `provided.al2023` runtime. The files in `infra/lambda-stubs/` exist so `cdk synth` works. A deploy refuses those stubs: each `bootstrap` must be an ELF binary.
-8. Node 22 and the Rust toolchain pinned in `backend/rust-toolchain.toml` (1.100.0, with clippy).
+3. For a production stage, an ACM certificate in `us-east-1` for the site hostname: `-c certificateArn=arn:aws:acm:us-east-1:204161828199:certificate/ID`. Production synthesis refuses to run without it, so CloudFront can require TLS 1.2 (`TLSv1.2_2021`). A dev stage can synthesize without a certificate.
+4. The site hostname, passed as `-c siteHost=`. Use `astrangerreads.com` when DNS is ready. Callback URLs, CORS, and `APP_BASE_URL` are built from it.
+5. Stripe test key and webhook signing secret, as SSM SecureString parameters you create yourself. The stack does not create them. See below. Select the app key `alias/st-<stage>` when you encrypt them.
+6. `cargo-lambda` that produces `linux/arm64` binaries for `provided.al2023`. The files in `infra/lambda-stubs/` exist so `cdk synth` works. A deploy refuses those stubs.
+7. Node 22 and the Rust toolchain pinned in `backend/rust-toolchain.toml` (1.100.0, with clippy).
 
-Leave `-c enableGuardDuty` unset unless you want the detector. It is off. Leave `STRIPE_ALLOW_LIVE` alone. The stack sets it to the string `false`.
+Leave `enableWaf` and `enableBotControl` unset. Both default off. Leave `enableSesIdentity` unset. The stack refuses to create an SES identity because `st-cfn-exec` has no `ses:*`. Leave `sesEnabled` unset so mailed-letter email stays off until the domain identity is verified. `STRIPE_ALLOW_LIVE` is the string `false`. `MAILING_DESK_READY` is `false`. There is no budget resource: `st-boundary` denies budget changes. The account baseline already has CloudTrail, GuardDuty, and the spend alarm topic.
 
 ## Build the functions
 
@@ -23,7 +22,7 @@ From `backend/`:
 cargo lambda build --release --arm64 --output-format zip
 ```
 
-`cargo-lambda` writes one directory per binary. Point `LAMBDA_ASSET_ROOT` at the directory that contains `health/`, `profile/`, `matching/`, `address/`, `payments/`, `webhook/`, `account/`, `post_confirmation/`, and `pre_token/`, each with a `bootstrap` file. Then:
+`cargo-lambda` writes one directory per binary, including `preservation/` and `notify/`. Point `LAMBDA_ASSET_ROOT` at the directory that contains those directories, each with a `bootstrap` file. Then:
 
 ```bash
 export LAMBDA_ASSET_ROOT=/absolute/path/to/those/directories
@@ -53,40 +52,26 @@ Deploy with `-c productionConfig=true`. The stack throws if that flag is set and
 From `infra/`, after `npm ci`:
 
 ```bash
-npx cdk bootstrap aws://ACCOUNT/us-east-1
-npx cdk deploy -c stage=dev \
-  -c siteHost=YOUR_HOST \
-  -c cognitoDomainPrefix=YOUR_PREFIX \
-  -c budgetEmail=YOU@example.com \
-  -c productionConfig=true
+npx --yes aws-cdk@2.1101.0 bootstrap aws://204161828199/us-east-1 \
+  --cloudformation-execution-policies "arn:aws:iam::204161828199:policy/st-cfn-exec,arn:aws:iam::204161828199:policy/st-cfn-exec-guardrails" \
+  --custom-permissions-boundary st-boundary \
+  --termination-protection
 ```
+
+`npm run deploy` still exits 1. A real deploy is the GitHub Actions workflow `.github/workflows/deploy.yml` (`workflow_dispatch`, mode `diff` or `deploy`, environment `production`), which assumes `arn:aws:iam::204161828199:role/st-deploy`. Deploy mode runs `cdk deploy` twice: the first pass reads `UserPoolClientId`, `CognitoDomain`, and `ApiUrl`, `infra/scripts/render-config.mjs` writes `config.js`, and the second pass uses `-c productionConfig=true`. Diff mode posts `cdk diff` and does not deploy.
 
 Add `-c certificateArn=...` for any stage where the viewer certificate should require TLS 1.2, and always for `stage=prod`.
 
-`cdk deploy` is the owner’s command. It is not run from this pull request.
+## Put the Stripe test parameters in place
 
-## Put the Stripe test secrets in place
+Create these two SecureString parameters yourself, encrypted with `alias/st-<stage>`. The stack never writes `/st/stripe/*`. `st-cfn-exec` denies SSM writes on that path.
 
-The stack creates two secrets. The names are stack outputs:
+- `/st/stripe/api-key`
+- `/st/stripe/webhook-secret`
 
-- `stranger-thoughts/STAGE/stripe/secret_key`
-- `stranger-thoughts/STAGE/stripe/webhook_secret`
+Use a test-mode restricted key or a test-mode secret key, and the signing secret from the test-mode webhook endpoint. The webhook URL is the API Gateway endpoint plus `/webhooks/stripe`, not the CloudFront `/api` path. Stripe calls API Gateway directly.
 
-Replace the placeholder JSON. The Lambdas read one field each.
-
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id stranger-thoughts/dev/stripe/secret_key \
-  --secret-string '{"secret_key":"sk_test_REPLACE"}'
-
-aws secretsmanager put-secret-value \
-  --secret-id stranger-thoughts/dev/stripe/webhook_secret \
-  --secret-string '{"webhook_secret":"whsec_REPLACE"}'
-```
-
-Use the test-mode secret and the signing secret from the test-mode webhook endpoint. The webhook URL is the API Gateway endpoint plus `/webhooks/stripe`, not the CloudFront `/api` path. Stripe calls API Gateway directly. One signing secret per stage.
-
-The code rejects an `sk_live_` key unless `STRIPE_ALLOW_LIVE` is exactly `true`. The stack sets that variable to `false`. Do not change it until a later review says live mode is allowed.
+The code rejects a live key (`rk_live_` or `sk_live_`) unless `STRIPE_ALLOW_LIVE` is exactly `true`. The stack sets that variable to `false`. Do not change it until a later review says live mode is allowed.
 
 In the Stripe dashboard (test mode), the webhook events to send are `checkout.session.completed` and `account.updated`.
 
@@ -100,23 +85,19 @@ DNS and the certificate are separate from the first synth. When you have a name:
 
 Do not add a `CNAME` file to this repository for the waitlist site until the waitlist’s own cutover in the root README. The v2 hostname is independent of GitHub Pages.
 
-## What a small month costs
+## What a spike can cost
 
-These are list prices from the pages linked, for a rough picture at about 200 monthly active users and well under a gigabyte of data. They are not a quote.
+WAF is off, so there is no $5 web ACL in the default stack. The blast-radius control is throttling and reserved concurrency, aimed at about $40 in a sustained spike:
 
-| Piece | Basis | Rough month |
-| --- | --- | --- |
-| Cognito Plus | $0.020 per MAU, no free tier on Plus. 200 MAU. [Cognito pricing](https://aws.amazon.com/cognito/pricing/) | about $4 |
-| WAF | $5 per web ACL, $1 per rule, $1 per managed rule group. This stack adds a rate rule plus `AWSManagedRulesCommonRuleSet` and `AWSManagedRulesKnownBadInputsRuleSet`, so about $8 before request charges ($0.60 per million). [WAF pricing](https://aws.amazon.com/waf/pricing/) | about $8 |
-| KMS | $1 per customer managed key per month, plus rotation. 20,000 requests a month are free. [KMS pricing](https://aws.amazon.com/kms/pricing/) | about $1 |
-| Secrets Manager | $0.40 per secret per month. Two secrets. [Secrets Manager pricing](https://aws.amazon.com/secrets-manager/pricing/) | about $0.80 |
-| Lambda | $0.20 per million requests. 1 million requests and 400,000 GB-seconds free. [Lambda pricing](https://aws.amazon.com/lambda/pricing/) | about $0 at this size |
-| HTTP API | $1.00 per million after the free tier. [API Gateway pricing](https://aws.amazon.com/api-gateway/pricing/) | about $0 at this size |
-| DynamoDB | On-demand example rates $0.625 per million writes and $0.125 per million reads. Storage $0.25/GB after 25 GB. Point-in-time recovery $0.20 per GB-month. [DynamoDB pricing](https://aws.amazon.com/dynamodb/pricing/) | about $1 |
-| CloudFront and S3 | Pay-as-you-go, price class 100. [CloudFront pricing](https://aws.amazon.com/cloudfront/pricing/), [S3 pricing](https://aws.amazon.com/s3/pricing/) | typically under $1 |
-| CloudTrail | The first management-events trail is free. [CloudTrail pricing](https://aws.amazon.com/cloudtrail/pricing/) | $0 |
-| Budgets | The budget alarm itself is free. | $0 |
+- Stage default: 2 requests per second, burst 4.
+- Sensitive routes (rotate, address, mail marks, preservation writes, account settings, health): 1 per second, burst 2.
+- Stripe webhook: 5 per second, burst 10.
+- API functions: reserved concurrency 2. Cognito triggers and the notifier: 1.
 
-That is about $16 in a quiet month, under the $20 alarm (80% and 100%). Cognito Plus is what moves it: 500 MAU is about $10 of Cognito before the rest of the stack. Pass `-c enableWaf=false` only if you accept dropping the web ACL. GuardDuty is off. Its price is on the [GuardDuty pricing page](https://aws.amazon.com/guardduty/pricing/); this document does not guess it.
+At 2 requests per second sustained, a month is about 5.2 million requests. API Gateway HTTP APIs, Lambda at 256 MB, DynamoDB on-demand writes, and logs for that volume stay under about $40. There is no CloudFormation budget. The account baseline owns CloudTrail and GuardDuty.
 
-Plus is the tier that provides the compromised-credential check. Essentials is cheaper and has a free tier, and it does not provide that check. The pool is Plus for that reason.
+Plus is the Cognito tier that provides the compromised-credential check. The pool is Plus for that reason.
+
+## Mailed-letter email
+
+The notifier sends one static plain-text message when someone marks a letter or a reply mailed, if `sesEnabled` is true and the recipient has not opted out. The from address defaults to `desk@astrangerreads.com`. The identity ARN defaults to `arn:aws:ses:us-east-1:204161828199:identity/astrangerreads.com`. Verify that identity, a MAIL FROM subdomain, three DKIM CNAMEs, and DMARC outside this stack. New SES accounts are sandboxed until AWS approves production access. The apex can stay a null MX. Leave the apex SPF at `v=spf1 -all` until that DNS change. A failed send does not undo the in-app status.

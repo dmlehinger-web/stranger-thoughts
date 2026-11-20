@@ -6,22 +6,23 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
-import * as budgets from "aws-cdk-lib/aws-budgets";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
-import * as cloudtrail from "aws-cdk-lib/aws-cloudtrail";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cw_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as guardduty from "aws-cdk-lib/aws-guardduty";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
-import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as sns from "aws-cdk-lib/aws-sns";
 import * as wafv2 from "aws-cdk-lib/aws-wafv2";
+import type { IConstruct } from "constructs";
 import type { Construct } from "constructs";
+import { NagSuppressions } from "cdk-nag";
 import routes from "../../backend/routes.json" with { type: "json" };
 import { contentSecurityPolicy } from "./headers.js";
 
@@ -31,9 +32,13 @@ export interface StrangerThoughtsProps extends cdk.StackProps {
   stage: "dev" | "prod";
   siteHost: string;
   cognitoDomainPrefix: string;
-  budgetEmail: string;
   enableWaf: boolean;
-  enableGuardDuty: boolean;
+  enableBotControl: boolean;
+  enableSesIdentity: boolean;
+  sesEnabled: boolean;
+  alertsTopicArn: string;
+  sesIdentityArn: string;
+  sesFromAddress: string;
   maxRotatesPerDay: string;
   maxAddressReadsPerDay: string;
   certificateArn?: string;
@@ -46,21 +51,35 @@ interface Route {
 
 export class StrangerThoughtsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: StrangerThoughtsProps) {
-    super(scope, id, props);
+    super(scope, id, {
+      ...props,
+      stackName: props.stackName ?? `st-${props.stage}`,
+      permissionsBoundary: props.permissionsBoundary ?? cdk.PermissionsBoundary.fromName("st-boundary"),
+    });
+    if (props.enableSesIdentity) {
+      throw new Error(
+        "enableSesIdentity stays off. st-cfn-exec cannot create SES identities. Verify astrangerreads.com outside this stack.",
+      );
+    }
+    cdk.Aspects.of(this).add(new ReservedConcurrency());
     const { stage } = props;
     const siteOrigin = `https://${props.siteHost}`;
     const removal = stage === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
+    const stripeApiParameter = "/st/stripe/api-key";
+    const stripeWebhookParameter = "/st/stripe/webhook-secret";
+    const stripeApiArn = `arn:aws:ssm:${this.region}:${this.account}:parameter/st/stripe/api-key`;
+    const stripeWebhookArn = `arn:aws:ssm:${this.region}:${this.account}:parameter/st/stripe/webhook-secret`;
 
     const addressKey = new kms.Key(this, "AddressKey", {
-      alias: `alias/stranger-thoughts-${stage}-addresses`,
-      description: "Envelope encryption for reader mailing addresses",
+      alias: `alias/st-${stage}`,
+      description: "App key for addresses, DynamoDB, and Stripe SSM parameters",
       enableKeyRotation: true,
       removalPolicy: removal,
       pendingWindow: cdk.Duration.days(stage === "prod" ? 30 : 7),
     });
 
-    const users = table(this, "Users", "userId", "sk", removal);
-    const readers = table(this, "Readers", "readerId", "sk", removal);
+    const users = table(this, "Users", "userId", "sk", removal, addressKey);
+    const readers = table(this, "Readers", "readerId", "sk", removal, addressKey);
     readers.addGlobalSecondaryIndex({
       indexName: "ActiveReaders",
       partitionKey: { name: "activePk", type: dynamodb.AttributeType.STRING },
@@ -68,7 +87,7 @@ export class StrangerThoughtsStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.INCLUDE,
       nonKeyAttributes: ["pseudonym", "blockedWriterIds"],
     });
-    const matches = table(this, "Matches", "writerId", "matchedAt", removal);
+    const matches = table(this, "Matches", "writerId", "matchedAt", removal, addressKey);
     matches.addGlobalSecondaryIndex({
       indexName: "ByMatch",
       partitionKey: { name: "matchId", type: dynamodb.AttributeType.STRING },
@@ -80,30 +99,20 @@ export class StrangerThoughtsStack extends cdk.Stack {
       sortKey: { name: "matchedAt", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    const tips = table(this, "Tips", "tipId", undefined, removal);
+    const tips = table(this, "Tips", "tipId", undefined, removal, addressKey);
+    const correspondence = table(this, "Correspondence", "matchId", "sk", removal, addressKey);
+    const preservation = table(this, "Preservation", "ownerId", "sk", removal, addressKey);
+    const rates = table(this, "RateLimits", "subject", "sk", removal, addressKey);
+    (rates.node.defaultChild as dynamodb.CfnTable).timeToLiveSpecification = {
+      attributeName: "ttl",
+      enabled: true,
+    };
     tips.addGlobalSecondaryIndex({
       indexName: "ByReader",
       partitionKey: { name: "readerId", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.INCLUDE,
       nonKeyAttributes: ["amountCents", "status", "kind"],
-    });
-
-    const stripeKey = new secretsmanager.Secret(this, "StripeSecretKey", {
-      secretName: `stranger-thoughts/${stage}/stripe/secret_key`,
-      description: "Replace secret_key with the Stripe test-mode key after deploy. Test mode only until security clears live mode.",
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({ secret_key: "replace-me" }),
-        generateStringKey: "unused",
-      },
-    });
-    const stripeWebhook = new secretsmanager.Secret(this, "StripeWebhookSecret", {
-      secretName: `stranger-thoughts/${stage}/stripe/webhook_secret`,
-      description: "Replace webhook_secret with the Stripe test-mode signing secret. One secret per stage.",
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({ webhook_secret: "replace-me" }),
-        generateStringKey: "unused",
-      },
     });
 
     const pool = new cognito.UserPool(this, "UsersPool", {
@@ -182,37 +191,51 @@ export class StrangerThoughtsStack extends cdk.Stack {
       READERS_TABLE: readers.tableName,
       MATCHES_TABLE: matches.tableName,
       TIPS_TABLE: tips.tableName,
+      CORRESPONDENCE_TABLE: correspondence.tableName,
+      PRESERVATION_TABLE: preservation.tableName,
+      RATE_TABLE: rates.tableName,
     };
-    const healthFn = rustFunction(this, "Health", "health", stage, {});
+    const healthFn = rustFunction(this, "Health", "health", stage, tables, 2);
     const profileFn = rustFunction(this, "Profile", "profile", stage, {
       ...tables,
       ADDRESS_KEY_ID: addressKey.keyArn,
-    });
+    }, 2);
     const matchingFn = rustFunction(this, "Matching", "matching", stage, {
       ...tables,
       MAX_ROTATES_PER_DAY: props.maxRotatesPerDay,
-    });
+    }, 2);
     const addressFn = rustFunction(this, "Address", "address", stage, {
       ...tables,
       ADDRESS_KEY_ID: addressKey.keyArn,
       MAX_ADDRESS_READS_PER_DAY: props.maxAddressReadsPerDay,
-    });
+      MAILING_DESK_READY: "false",
+    }, 2);
     const paymentsFn = rustFunction(this, "Payments", "payments", stage, {
       ...tables,
-      STRIPE_SECRET_ID: stripeKey.secretArn,
+      STRIPE_API_KEY_PARAMETER: stripeApiParameter,
       STRIPE_ALLOW_LIVE: "false",
       APP_BASE_URL: siteOrigin,
-    });
+    }, 2);
     const webhookFn = rustFunction(this, "Webhook", "webhook", stage, {
       ...tables,
-      STRIPE_WEBHOOK_SECRET_ID: stripeWebhook.secretArn,
-    });
+      STRIPE_WEBHOOK_SECRET_PARAMETER: stripeWebhookParameter,
+      STRIPE_ALLOW_LIVE: "false",
+    }, 2);
     const accountFn = rustFunction(this, "Account", "account", stage, {
       ...tables,
       USER_POOL_ID: pool.userPoolId,
-    });
-    const postConfirmFn = rustFunction(this, "PostConfirmation", "post_confirmation", stage, {});
-    const preTokenFn = rustFunction(this, "PreToken", "pre_token", stage, {});
+    }, 2);
+    const preservationFn = rustFunction(this, "PreservationApi", "preservation", stage, tables, 2);
+    const notifyFn = rustFunction(this, "Notify", "notify", stage, {
+      ...tables,
+      USER_POOL_ID: pool.userPoolId,
+      SES_ENABLED: props.sesEnabled ? "true" : "false",
+      SES_FROM_ADDRESS: props.sesFromAddress,
+      SITE_ORIGIN: siteOrigin,
+    }, 1);
+    matchingFn.addEnvironment("NOTIFY_FUNCTION_NAME", notifyFn.functionName);
+    const postConfirmFn = rustFunction(this, "PostConfirmation", "post_confirmation", stage, {}, 1);
+    const preTokenFn = rustFunction(this, "PreToken", "pre_token", stage, {}, 1);
     pool.addTrigger(cognito.UserPoolOperation.POST_CONFIRMATION, postConfirmFn);
     pool.addTrigger(
       cognito.UserPoolOperation.PRE_TOKEN_GENERATION_CONFIG,
@@ -224,8 +247,16 @@ export class StrangerThoughtsStack extends cdk.Stack {
     grantTable(profileFn, readers, ["dynamodb:UpdateItem", "dynamodb:PutItem"]);
     addressKey.grant(profileFn, "kms:GenerateDataKey");
 
+    grantTable(healthFn, rates, ["dynamodb:GetItem", "dynamodb:PutItem"]);
+
     grantTable(matchingFn, users, ["dynamodb:GetItem"]);
     grantTable(matchingFn, matches, ["dynamodb:Query", "dynamodb:UpdateItem"]);
+    grantTable(matchingFn, correspondence, ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
+    grantTable(matchingFn, rates, ["dynamodb:GetItem", "dynamodb:PutItem"]);
+    matchingFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["lambda:InvokeFunction"],
+      resources: [notifyFn.functionArn],
+    }));
     grantIndex(matchingFn, matches, "ByMatch", ["dynamodb:Query"]);
     grantIndex(matchingFn, readers, "ActiveReaders", ["dynamodb:Query"]);
     matchingFn.addToRolePolicy(new iam.PolicyStatement({
@@ -283,8 +314,9 @@ export class StrangerThoughtsStack extends cdk.Stack {
         },
       },
     }));
-    stripeKey.grantRead(paymentsFn);
+    grantParameter(paymentsFn, stripeApiArn, addressKey);
 
+    grantTable(webhookFn, rates, ["dynamodb:GetItem", "dynamodb:PutItem"]);
     grantTable(webhookFn, tips, ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem"]);
     webhookFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:UpdateItem"],
@@ -295,7 +327,7 @@ export class StrangerThoughtsStack extends cdk.Stack {
         },
       },
     }));
-    stripeWebhook.grantRead(webhookFn);
+    grantParameter(webhookFn, stripeWebhookArn, addressKey);
 
     grantTable(accountFn, users, ["dynamodb:UpdateItem", "dynamodb:DeleteItem"]);
     accountFn.addToRolePolicy(new iam.PolicyStatement({
@@ -311,6 +343,7 @@ export class StrangerThoughtsStack extends cdk.Stack {
             "payoutsReady",
             "activePk",
             "blockedWriterIds",
+            "mailAlerts",
           ],
         },
         StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
@@ -321,7 +354,7 @@ export class StrangerThoughtsStack extends cdk.Stack {
       resources: [readers.tableArn],
       conditions: {
         "ForAllValues:StringEquals": {
-          "dynamodb:Attributes": ["blockedWriterIds", "activePk"],
+          "dynamodb:Attributes": ["blockedWriterIds", "activePk", "mailAlerts"],
         },
       },
     }));
@@ -330,7 +363,49 @@ export class StrangerThoughtsStack extends cdk.Stack {
     grantIndex(accountFn, matches, "ByReader", ["dynamodb:Query"]);
     grantIndex(accountFn, tips, "ByReader", ["dynamodb:Query"]);
     accountFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem"],
+      resources: [users.tableArn],
+      conditions: {
+        "ForAllValues:StringEquals": {
+          "dynamodb:Attributes": ["userId", "sk", "mailAlerts"],
+        },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    }));
+    grantTable(accountFn, preservation, ["dynamodb:Query", "dynamodb:DeleteItem"]);
+    accountFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["cognito-idp:AdminDeleteUser"],
+      resources: [pool.userPoolArn],
+    }));
+
+    grantTable(preservationFn, preservation, ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:DeleteItem"]);
+    grantTable(preservationFn, rates, ["dynamodb:GetItem", "dynamodb:PutItem"]);
+    grantTable(preservationFn, matches, ["dynamodb:Query"]);
+    grantIndex(preservationFn, matches, "ByReader", ["dynamodb:Query"]);
+
+    grantTable(notifyFn, correspondence, ["dynamodb:UpdateItem"]);
+    for (const [profileTable, idName] of [
+      [users, "userId"],
+      [readers, "readerId"],
+    ] as const) {
+      notifyFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem"],
+        resources: [profileTable.tableArn],
+        conditions: {
+          "ForAllValues:StringEquals": {
+            "dynamodb:Attributes": [idName, "sk", "mailAlerts"],
+          },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }));
+    }
+    notifyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["ses:SendEmail"],
+      resources: [props.sesIdentityArn],
+      conditions: { StringEquals: { "ses:FromAddress": props.sesFromAddress } },
+    }));
+    notifyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["cognito-idp:ListUsers"],
       resources: [pool.userPoolArn],
     }));
 
@@ -370,14 +445,23 @@ export class StrangerThoughtsStack extends cdk.Stack {
       ["payments", new HttpLambdaIntegration("PaymentsInt", paymentsFn)],
       ["webhook", new HttpLambdaIntegration("WebhookInt", webhookFn)],
       ["account", new HttpLambdaIntegration("AccountInt", accountFn)],
+      ["preservation", new HttpLambdaIntegration("PreservationInt", preservationFn)],
     ]);
     const ownerOf = (route: Route): string => {
       if (route.path === "/health") return "health";
       if (route.path === "/webhooks/stripe") return "webhook";
+      if (route.path.startsWith("/preservation")) return "preservation";
       if (route.path.startsWith("/writers/profile") || route.path.includes("demographics") || route.path === "/readers/profile") {
         return "profile";
       }
-      if (route.path.startsWith("/writers/") || route.path.endsWith("/sent")) return "matching";
+      if (
+        route.path.startsWith("/writers/")
+        || route.path.endsWith("/sent")
+        || route.path.endsWith("/mailed")
+        || route.path.endsWith("/received")
+      ) {
+        return "matching";
+      }
       if (route.path.endsWith("/address")) return "address";
       if (route.path.startsWith("/tips/") || route.path.endsWith("/link")) return "payments";
       return "account";
@@ -393,12 +477,41 @@ export class StrangerThoughtsStack extends cdk.Stack {
         authorizer: publicKeys.has(`${route.method} ${route.path}`) ? undefined : authorizer,
       });
     }
+    const apiAccess = new logs.LogGroup(this, "ApiAccessLogs", {
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    apiAccess.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [new iam.ServicePrincipal("delivery.logs.amazonaws.com")],
+      actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
+      resources: [`${apiAccess.logGroupArn}:*`],
+      conditions: {
+        ArnLike: { "aws:SourceArn": `arn:aws:logs:${this.region}:${this.account}:*` },
+        StringEquals: { "aws:SourceAccount": this.account },
+      },
+    }));
     const cfnStage = httpApi.defaultStage?.node.defaultChild as apigwv2.CfnStage;
-    cfnStage.defaultRouteSettings = { throttlingBurstLimit: 20, throttlingRateLimit: 10 };
+    cfnStage.accessLogSettings = {
+      destinationArn: apiAccess.logGroupArn,
+      format: JSON.stringify({
+        requestId: "$context.requestId",
+        routeKey: "$context.routeKey",
+        status: "$context.status",
+      }),
+    };
+    const tight = { throttlingBurstLimit: 2, throttlingRateLimit: 1 };
+    cfnStage.defaultRouteSettings = { throttlingBurstLimit: 4, throttlingRateLimit: 2 };
     cfnStage.routeSettings = {
-      "POST /writers/rotate": { throttlingBurstLimit: 2, throttlingRateLimit: 1 },
-      "GET /matches/{matchId}/address": { throttlingBurstLimit: 5, throttlingRateLimit: 2 },
-      "POST /webhooks/stripe": { throttlingBurstLimit: 20, throttlingRateLimit: 5 },
+      "POST /writers/rotate": tight,
+      "GET /matches/{matchId}/address": tight,
+      "POST /matches/{matchId}/sent": tight,
+      "POST /matches/{matchId}/mailed": tight,
+      "POST /matches/{matchId}/received": tight,
+      "POST /preservation/private": tight,
+      "POST /preservation/archive": tight,
+      "PUT /account/settings": tight,
+      "GET /health": tight,
+      "POST /webhooks/stripe": { throttlingBurstLimit: 10, throttlingRateLimit: 5 },
     };
 
     const siteBucket = new s3.Bucket(this, "Site", {
@@ -439,6 +552,16 @@ export class StrangerThoughtsStack extends cdk.Stack {
   return event.request;
 }`),
     });
+    const robotsHeader = new cloudfront.Function(this, "RobotsHeader", {
+      code: cloudfront.FunctionCode.fromInline(`function handler(event) {
+  var response = event.response;
+  var uri = event.request.uri;
+  if (uri.indexOf("/write/") === 0 || uri.indexOf("/read/") === 0 || uri.indexOf("/auth/") === 0 || uri.indexOf("/archive/") === 0) {
+    response.headers["x-robots-tag"] = { value: "noindex, noarchive" };
+  }
+  return response;
+}`),
+    });
     const apiRewrite = new cloudfront.Function(this, "ApiRewrite", {
       code: cloudfront.FunctionCode.fromInline(`function handler(event) {
   var uri = event.request.uri;
@@ -465,6 +588,9 @@ export class StrangerThoughtsStack extends cdk.Stack {
           },
           managedRule("Common", 2, "AWSManagedRulesCommonRuleSet", `st-${stage}-common`),
           managedRule("BadInputs", 3, "AWSManagedRulesKnownBadInputsRuleSet", `st-${stage}-bad`),
+          ...(props.enableBotControl
+            ? [managedRule("Bots", 4, "AWSManagedRulesBotControlRuleSet", `st-${stage}-bots`)]
+            : []),
         ],
       });
       webAclArn = acl.attrArn;
@@ -487,10 +613,16 @@ export class StrangerThoughtsStack extends cdk.Stack {
         origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         responseHeadersPolicy: headers,
-        functionAssociations: [{
-          function: spaRewrite,
-          eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-        }],
+        functionAssociations: [
+          {
+            function: spaRewrite,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+          {
+            function: robotsHeader,
+            eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE,
+          },
+        ],
       },
       additionalBehaviors: {
         "/api/*": {
@@ -523,32 +655,60 @@ export class StrangerThoughtsStack extends cdk.Stack {
       prune: true,
     });
 
-    new cloudtrail.Trail(this, "Trail", {
-      trailName: `stranger-thoughts-${stage}`,
-      managementEvents: cloudtrail.ReadWriteType.ALL,
-      includeGlobalServiceEvents: true,
+    const alerts = sns.Topic.fromTopicArn(this, "Alerts", props.alertsTopicArn);
+    const action = new cw_actions.SnsAction(alerts);
+    const reserved = 8 * 2 + 3;
+    const searchSum = (namespace: string, dimension: string, metricName: string) => new cloudwatch.MathExpression({
+      expression: `SUM(SEARCH('{${namespace},${dimension}} MetricName="${metricName}"', 'Sum', 300))`,
+      usingMetrics: {},
+      period: cdk.Duration.minutes(5),
     });
-    if (props.enableGuardDuty) {
-      new guardduty.CfnDetector(this, "GuardDuty", { enable: true });
-    }
-
-    new budgets.CfnBudget(this, "MonthlyBudget", {
-      budget: {
-        budgetName: `stranger-thoughts-${stage}`,
-        budgetType: "COST",
-        timeUnit: "MONTHLY",
-        budgetLimit: { amount: 20, unit: "USD" },
-      },
-      notificationsWithSubscribers: [80, 100].map((threshold) => ({
-        notification: {
-          comparisonOperator: "GREATER_THAN",
-          notificationType: "ACTUAL",
-          threshold,
-          thresholdType: "PERCENTAGE",
-        },
-        subscribers: [{ address: props.budgetEmail, subscriptionType: "EMAIL" }],
-      })),
+    const alarm = (id: string, name: string, metric: cloudwatch.IMetric, threshold: number) => {
+      const item = new cloudwatch.Alarm(this, id, {
+        alarmName: name,
+        metric,
+        threshold,
+        evaluationPeriods: 1,
+        datapointsToAlarm: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+      item.addAlarmAction(action);
+    };
+    const apiMetric = (metricName: string) => new cloudwatch.Metric({
+      namespace: "AWS/ApiGateway",
+      metricName,
+      dimensionsMap: { ApiId: httpApi.apiId, Stage: "$default" },
+      statistic: "Sum",
+      period: cdk.Duration.minutes(5),
     });
+    alarm("Api5xx", `st-${stage}-api-5xx`, apiMetric("5xx"), 1);
+    alarm("Api4xx", `st-${stage}-api-4xx`, apiMetric("4xx"), 50);
+    alarm("LambdaErrors", `st-${stage}-lambda-errors`, searchSum("AWS/Lambda", "FunctionName", "Errors"), 1);
+    alarm("LambdaThrottles", `st-${stage}-lambda-throttles`, searchSum("AWS/Lambda", "FunctionName", "Throttles"), 1);
+    alarm(
+      "LambdaConcurrency",
+      `st-${stage}-lambda-concurrency`,
+      new cloudwatch.MathExpression({
+        expression: "SUM(SEARCH('{AWS/Lambda,FunctionName} MetricName=\"ConcurrentExecutions\"', 'Maximum', 300))",
+        usingMetrics: {},
+        period: cdk.Duration.minutes(5),
+      }),
+      Math.ceil(reserved * 0.8),
+    );
+    alarm(
+      "DynamoThrottles",
+      `st-${stage}-dynamodb-throttles`,
+      new cloudwatch.MathExpression({
+        expression: [
+          "SUM(SEARCH('{AWS/DynamoDB,TableName} MetricName=\"ReadThrottleEvents\"', 'Sum', 300))",
+          "SUM(SEARCH('{AWS/DynamoDB,TableName} MetricName=\"WriteThrottleEvents\"', 'Sum', 300))",
+        ].join("+"),
+        usingMetrics: {},
+        period: cdk.Duration.minutes(5),
+      }),
+      1,
+    );
 
     new cdk.CfnOutput(this, "SiteUrl", { value: `https://${distribution.distributionDomainName}` });
     new cdk.CfnOutput(this, "ApiUrl", { value: httpApi.apiEndpoint });
@@ -557,8 +717,56 @@ export class StrangerThoughtsStack extends cdk.Stack {
     new cdk.CfnOutput(this, "CognitoDomain", {
       value: `${props.cognitoDomainPrefix}.auth.${this.region}.amazoncognito.com`,
     });
-    new cdk.CfnOutput(this, "StripeSecretName", { value: stripeKey.secretName });
-    new cdk.CfnOutput(this, "StripeWebhookSecretName", { value: stripeWebhook.secretName });
+    new cdk.CfnOutput(this, "StripeApiKeyParameter", { value: stripeApiParameter });
+    new cdk.CfnOutput(this, "StripeWebhookSecretParameter", { value: stripeWebhookParameter });
+    new cdk.CfnOutput(this, "AppKeyAlias", { value: `alias/st-${stage}` });
+    for (const child of this.node.findAll()) {
+      reserveLambda(child);
+    }
+    const reason = {
+      cog1: "A passphrase of at least 15 characters is the control. Character-class rules are not required, so a person can use a sentence.",
+      cog2: "Authenticator MFA is offered after signup and stays optional. Requiring it would block people who only send letters and do not store a mailing address.",
+      apig4: "GET /health and POST /webhooks/stripe are the only routes without a Cognito JWT. Health is a status check. Stripe verifies the webhook signature. Both are throttled.",
+      iam5logs: "logs:CreateLogStream and logs:PutLogEvents need the stream suffix on this function's own log group. The resource is that group, not every group.",
+      iam5pool: "AdminAddUserToGroup uses userpool/* because the post-confirmation trigger and the pool would otherwise form a cycle. This stack creates one pool.",
+      iam5deploy: "The CDK bucket deployment copies objects into the private site bucket and invalidates CloudFront. Those actions use object suffixes on that bucket and the CDK asset bucket.",
+      s1: "S3 server access logs store raw client IPs. This stack does not store raw IPs. The bucket is private, SSL-only, and reached through origin access control.",
+      cfr1: "There is no geographic block. A letter can come from anywhere a person can post one.",
+      cfr2: "WAF and Bot Control stay off unless both flags are set. Stage throttles and reserved concurrency are the spend and scraping control.",
+      cfr3: "CloudFront access logs store raw client IPs. This stack does not store raw IPs. API 4xx and 5xx alarms cover abuse.",
+    };
+    NagSuppressions.addResourceSuppressions(pool, [
+      { id: "AwsSolutions-COG1", reason: reason.cog1 },
+      { id: "AwsSolutions-COG2", reason: reason.cog2 },
+    ], true);
+    NagSuppressions.addResourceSuppressionsByPath(this, [
+      `${this.node.path}/HttpApi/GET--health/Resource`,
+      `${this.node.path}/HttpApi/POST--webhooks--stripe/Resource`,
+    ], [{ id: "AwsSolutions-APIG4", reason: reason.apig4 }]);
+    for (const fn of [healthFn, profileFn, matchingFn, addressFn, paymentsFn, webhookFn, accountFn, preservationFn, notifyFn, preTokenFn]) {
+      NagSuppressions.addResourceSuppressions(fn.role!, [
+        { id: "AwsSolutions-IAM5", reason: reason.iam5logs },
+      ], true);
+    }
+    NagSuppressions.addResourceSuppressions(postConfirmFn.role!, [
+      { id: "AwsSolutions-IAM5", reason: `${reason.iam5logs} ${reason.iam5pool}` },
+    ], true);
+    NagSuppressions.addResourceSuppressions(siteBucket, [
+      { id: "AwsSolutions-S1", reason: reason.s1 },
+    ], true);
+    NagSuppressions.addResourceSuppressions(distribution, [
+      { id: "AwsSolutions-CFR1", reason: reason.cfr1 },
+      { id: "AwsSolutions-CFR2", reason: reason.cfr2 },
+      { id: "AwsSolutions-CFR3", reason: reason.cfr3 },
+    ], true);
+    for (const child of this.node.findAll()) {
+      if (child.node.path.includes("CDKBucketDeployment") && child.node.id === "ServiceRole") {
+        NagSuppressions.addResourceSuppressions(child, [
+          { id: "AwsSolutions-IAM4", reason: reason.iam5deploy },
+          { id: "AwsSolutions-IAM5", reason: reason.iam5deploy },
+        ], true);
+      }
+    }
   }
 }
 
@@ -568,12 +776,15 @@ function table(
   partitionKey: string,
   sortKey: string | undefined,
   removal: cdk.RemovalPolicy,
+  key: kms.IKey,
 ) {
   return new dynamodb.Table(stack, id, {
     partitionKey: { name: partitionKey, type: dynamodb.AttributeType.STRING },
     sortKey: sortKey ? { name: sortKey, type: dynamodb.AttributeType.STRING } : undefined,
     billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-    encryption: dynamodb.TableEncryption.AWS_MANAGED,
+    encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+    encryptionKey: key,
+    deletionProtection: true,
     pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
     removalPolicy: removal,
   });
@@ -585,6 +796,7 @@ function rustFunction(
   bin: string,
   stage: string,
   environment: Record<string, string>,
+  reserved: number,
 ) {
   const logGroup = new logs.LogGroup(stack, `${id}Logs`, {
     retention: logs.RetentionDays.ONE_MONTH,
@@ -618,9 +830,24 @@ function rustFunction(
     logGroup,
     timeout: cdk.Duration.seconds(10),
     memorySize: 256,
+    reservedConcurrentExecutions: reserved,
     environment: { STAGE: stage, ...environment },
     tracing: lambda.Tracing.DISABLED,
   });
+}
+
+function grantParameter(fn: lambda.Function, parameterArn: string, key: kms.IKey) {
+  fn.addToRolePolicy(new iam.PolicyStatement({
+    actions: ["ssm:GetParameter"],
+    resources: [parameterArn],
+  }));
+  fn.addToRolePolicy(new iam.PolicyStatement({
+    actions: ["kms:Decrypt"],
+    resources: [key.keyArn],
+    conditions: {
+      StringEquals: { "kms:ViaService": `ssm.${cdk.Stack.of(fn).region}.amazonaws.com` },
+    },
+  }));
 }
 
 function grantTable(fn: lambda.Function, table: dynamodb.Table, actions: string[]) {
@@ -636,6 +863,22 @@ function grantIndex(fn: lambda.Function, table: dynamodb.Table, index: string, a
 
 function visibility(name: string): wafv2.CfnWebACL.VisibilityConfigProperty {
   return { cloudWatchMetricsEnabled: true, metricName: name, sampledRequestsEnabled: true };
+}
+
+function reserveLambda(node: IConstruct) {
+  if (node instanceof lambda.CfnFunction) {
+    if (node.reservedConcurrentExecutions == null) node.reservedConcurrentExecutions = 1;
+    return;
+  }
+  if (cdk.CfnResource.isCfnResource(node) && node.cfnResourceType === "AWS::Lambda::Function") {
+    node.addPropertyOverride("ReservedConcurrentExecutions", 1);
+  }
+}
+
+class ReservedConcurrency implements cdk.IAspect {
+  visit(node: IConstruct): void {
+    reserveLambda(node);
+  }
 }
 
 function managedRule(name: string, priority: number, group: string, metric: string) {
