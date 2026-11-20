@@ -122,7 +122,7 @@ Point-in-time recovery can retain ciphertext for up to 35 days after a delete. T
 - The builder tip is pay-what-you-want, with presets, and has no destination.
 - Amounts are 100 to 20000 cents.
 - Live mode: `enforce_stripe_mode` accepts `rk_test_` and `sk_test_` keys and rejects `rk_live_` and `sk_live_` unless the environment value is exactly `true`. The stack sets `STRIPE_ALLOW_LIVE=false`. There is no other switch.
-- The webhook checks `Stripe-Signature` (HMAC-SHA256 over `{timestamp}.{raw body}`, tolerance 300 seconds, multiple `v1` signatures accepted). Unsigned, stale, and bad signatures are 401. A checkout is marked paid only when `payment_status` is `paid`, the tip row exists, and `checkoutSessionId` matches. The handler claims `event#{id}` with `attribute_not_exists`, and deletes that claim if the write fails, then returns 503 so Stripe can retry. The parser does not surface a customer email or address from the event.
+- The webhook checks `Stripe-Signature` (HMAC-SHA256 over `{timestamp}.{raw body}`, tolerance 300 seconds, multiple `v1` signatures accepted). Unsigned, stale, and bad signatures are 401. A checkout is marked paid only when `payment_status` is `paid`, the tip row exists, and `checkoutSessionId` matches. The handler claims `event#{id}` with `attribute_not_exists`. A conditional check failure on the tip (missing row or a different `checkoutSessionId`) keeps that claim and returns 200. A transient DynamoDB error deletes the claim and returns 503 so Stripe can retry. The parser does not surface a customer email or address from the event.
 - Connect Express KYC is Stripe’s. This service stores the resulting account id and the payouts-ready flag.
 
 ## Edge

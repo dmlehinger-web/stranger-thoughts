@@ -12,7 +12,7 @@ This repository does not deploy itself. `infra/package.json` makes `npm run depl
 6. `cargo-lambda` that produces `linux/arm64` binaries for `provided.al2023`. The files in `infra/lambda-stubs/` exist so `cdk synth` works. A deploy refuses those stubs.
 7. Node 22 and the Rust toolchain pinned in `backend/rust-toolchain.toml` (1.100.0, with clippy).
 
-Leave `enableWaf` and `enableBotControl` unset. Both default off. Leave `enableSesIdentity` unset. The stack refuses to create an SES identity because `st-cfn-exec` has no `ses:*`. Leave `sesEnabled` unset so mailed-letter email stays off until the domain identity is verified. `STRIPE_ALLOW_LIVE` is the string `false`. `MAILING_DESK_READY` is `false`. There is no budget resource: `st-boundary` denies budget changes. The account baseline already has CloudTrail, GuardDuty, and the spend alarm topic.
+Leave `enableWaf` and `enableBotControl` unset. Both default off. Leave `enableSesIdentity` unset. The stack refuses to create an SES identity because `st-cfn-exec` has no `ses:*`. Leave `sesEnabled` unset so mailed-letter email stays off until the domain identity is verified. `STRIPE_ALLOW_LIVE` is the string `false`. `MAILING_DESK_READY` is `false`. There is no budget resource: `st-boundary` denies budget changes. The account baseline already has CloudTrail and the spend alarm topic. GuardDuty is not enabled in that baseline. It stays off unless the account explicitly opts in.
 
 ## Build the functions
 
@@ -96,7 +96,7 @@ WAF is off, so there is no $5 web ACL in the default stack. The blast-radius con
 - Stripe webhook: 5 per second, burst 10.
 - API functions: reserved concurrency 2. Cognito triggers and the notifier: 1.
 
-At 2 requests per second sustained, a month is about 5.2 million requests. API Gateway HTTP APIs, Lambda at 256 MB, DynamoDB on-demand writes, and logs for that volume stay under about $40. There is no CloudFormation budget. The account baseline owns CloudTrail and GuardDuty.
+At 2 requests per second sustained, a month is about 5.2 million requests. API Gateway HTTP APIs, Lambda at 256 MB, DynamoDB on-demand writes, and logs for that volume stay under about $40. There is no CloudFormation budget. The account baseline owns CloudTrail. GuardDuty is not enabled there. It stays off unless the account explicitly opts in.
 
 Plus is the Cognito tier that provides the compromised-credential check. The pool is Plus for that reason.
 

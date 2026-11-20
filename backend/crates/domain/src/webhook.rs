@@ -125,6 +125,34 @@ fn checkout_action(object: &Value) -> WebhookAction {
     }
 }
 
+/// What the claimed write did. A condition failure is permanent. Anything else can be retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimedWrite {
+    Done,
+    Conflict,
+    Transient,
+}
+
+/// How the webhook answers Stripe after the event row is already claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebhookDisposition {
+    pub status: u16,
+    pub release_claim: bool,
+}
+
+pub fn disposition_after_claim(write: ClaimedWrite) -> WebhookDisposition {
+    match write {
+        ClaimedWrite::Done | ClaimedWrite::Conflict => WebhookDisposition {
+            status: 200,
+            release_claim: false,
+        },
+        ClaimedWrite::Transient => WebhookDisposition {
+            status: 503,
+            release_claim: true,
+        },
+    }
+}
+
 fn account_action(object: &Value) -> WebhookAction {
     let reader_id = object
         .pointer("/metadata/reader_id")
@@ -227,5 +255,20 @@ mod tests {
         }"#;
         let parsed = parse_event(body).unwrap();
         assert_eq!(parsed.action, WebhookAction::Ignore);
+    }
+
+    #[test]
+    fn conditional_check_failure_keeps_the_claim_and_returns_200() {
+        let disposition = disposition_after_claim(ClaimedWrite::Conflict);
+        assert_eq!(disposition.status, 200);
+        assert!(!disposition.release_claim);
+    }
+
+    #[test]
+    fn transient_write_releases_the_claim_and_returns_503() {
+        let disposition = disposition_after_claim(ClaimedWrite::Transient);
+        assert_eq!(disposition.status, 503);
+        assert!(disposition.release_claim);
+        assert!(!disposition_after_claim(ClaimedWrite::Done).release_claim);
     }
 }

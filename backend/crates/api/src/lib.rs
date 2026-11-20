@@ -382,12 +382,7 @@ async fn payments_inner(request: &Request) -> Result<Response<Body>, ApiFailure>
         )?;
         let session = stripe_post(aws, &secret, STRIPE_CHECKOUT_URL, &fields).await?;
         let url = hosted_url(&session, "https://checkout.stripe.com/")?;
-        let session_id = session
-            .get("id")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_string();
-        if !session_id.is_empty() {
+        if let Some(session_id) = checkout_session_id(&session) {
             store.set_checkout_session(&tip_id, &session_id).await?;
         }
         return Ok(json_response(200, &json!({"url": url})));
@@ -402,7 +397,7 @@ async fn payments_inner(request: &Request) -> Result<Response<Body>, ApiFailure>
         let back = format!("{}/", app_base.trim_end_matches('/'));
         let fields = checkout_form(
             &CheckoutPlan {
-                tip_id,
+                tip_id: tip_id.clone(),
                 user_id: routed.user_id,
                 amount_cents: routed.amount_cents,
                 kind: TipKind::Builder,
@@ -416,6 +411,9 @@ async fn payments_inner(request: &Request) -> Result<Response<Body>, ApiFailure>
         )?;
         let session = stripe_post(aws, &secret, STRIPE_CHECKOUT_URL, &fields).await?;
         let url = hosted_url(&session, "https://checkout.stripe.com/")?;
+        if let Some(session_id) = checkout_session_id(&session) {
+            store.set_checkout_session(&tip_id, &session_id).await?;
+        }
         return Ok(json_response(200, &json!({"url": url})));
     }
     Err(ApiFailure::NotFound)
@@ -465,20 +463,36 @@ async fn webhook_inner(request: &Request) -> Result<Response<Body>, ApiFailure> 
     if !store.claim_stripe_event(&event.id).await? {
         return Ok(json_response(200, &json!({"duplicate": true})));
     }
-    let processed = match &event.action {
+    let write = match &event.action {
         stranger_domain::webhook::WebhookAction::MarkTipPaid { tip_id, session_id } => {
-            store.mark_tip_paid(tip_id, session_id).await
+            match store.mark_tip_paid(tip_id, session_id).await {
+                Ok(()) => stranger_domain::webhook::ClaimedWrite::Done,
+                Err(store::TipUpdateError::Conflict) => stranger_domain::webhook::ClaimedWrite::Conflict,
+                Err(store::TipUpdateError::Transient) => stranger_domain::webhook::ClaimedWrite::Transient,
+            }
         }
         stranger_domain::webhook::WebhookAction::UpdatePayouts { reader_id, ready } => {
-            store.set_payouts_ready(reader_id, *ready).await
+            match store.set_payouts_ready(reader_id, *ready).await {
+                Ok(()) => stranger_domain::webhook::ClaimedWrite::Done,
+                Err(_) => stranger_domain::webhook::ClaimedWrite::Transient,
+            }
         }
-        stranger_domain::webhook::WebhookAction::Ignore => Ok(()),
+        stranger_domain::webhook::WebhookAction::Ignore => stranger_domain::webhook::ClaimedWrite::Done,
     };
-    if processed.is_err() {
-        let _ = store.release_stripe_event(&event.id).await;
-        return Ok(json_response(503, &json!({"error": "retry"})));
+    let disposition = stranger_domain::webhook::disposition_after_claim(write);
+    if matches!(write, stranger_domain::webhook::ClaimedWrite::Conflict) {
+        let log = SafeLog::new("tip update conflict").field("event_id", &event.id);
+        tracing::warn!("{}", serde_json::to_string(&log).unwrap_or_else(|_| "{}".into()));
     }
-    Ok(json_response(200, &json!({"received": true})))
+    if disposition.release_claim {
+        let _ = store.release_stripe_event(&event.id).await;
+    }
+    let body = if disposition.status == 503 {
+        json!({"error": "retry"})
+    } else {
+        json!({"received": true})
+    };
+    Ok(json_response(disposition.status, &body))
 }
 
 pub async fn account(request: Request) -> Result<Response<Body>, lambda_http::Error> {
@@ -607,6 +621,14 @@ pub async fn handle_post_confirmation(
 
 pub fn handle_pre_token(event: serde_json::Value) -> serde_json::Value {
     triggers::shape_token(event)
+}
+
+pub(crate) fn checkout_session_id(session: &serde_json::Value) -> Option<String> {
+    session
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
 }
 
 pub(crate) fn noted(path: &str, response: Response<Body>) -> Response<Body> {
@@ -941,6 +963,59 @@ impl From<RateLimitError> for ApiFailure {
 impl From<store::StoreError> for ApiFailure {
     fn from(_: store::StoreError) -> Self {
         ApiFailure::Invalid
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkout_session_id;
+    use crate::store::{classify_tip_update, tip_paid_condition_matches, TipUpdateError};
+    use stranger_domain::webhook::{disposition_after_claim, ClaimedWrite};
+
+    #[test]
+    fn builder_checkout_stores_the_session_mark_tip_paid_compares() {
+        let session = serde_json::json!({
+            "id": "cs_test_builder",
+            "url": "https://checkout.stripe.com/c/pay/cs_test_builder"
+        });
+        let stored = checkout_session_id(&session).expect("session id");
+        assert_eq!(stored, "cs_test_builder");
+        assert!(tip_paid_condition_matches(&stored, "cs_test_builder"));
+        assert!(!tip_paid_condition_matches(&stored, "cs_test_other"));
+        assert!(checkout_session_id(&serde_json::json!({"id": ""})).is_none());
+
+        let source = include_str!("lib.rs");
+        let builder = source
+            .split("path == \"/tips/builder\"")
+            .nth(1)
+            .expect("builder route");
+        let body = builder.split("Err(ApiFailure::NotFound)").next().unwrap();
+        assert!(
+            body.contains("set_checkout_session"),
+            "builder tips must store checkoutSessionId"
+        );
+    }
+
+    #[test]
+    fn webhook_keeps_the_claim_when_mark_tip_paid_conflicts() {
+        let write = match classify_tip_update(true) {
+            TipUpdateError::Conflict => ClaimedWrite::Conflict,
+            TipUpdateError::Transient => ClaimedWrite::Transient,
+        };
+        let disposition = disposition_after_claim(write);
+        assert_eq!(disposition.status, 200);
+        assert!(!disposition.release_claim);
+    }
+
+    #[test]
+    fn webhook_releases_the_claim_on_a_transient_tip_write() {
+        let write = match classify_tip_update(false) {
+            TipUpdateError::Conflict => ClaimedWrite::Conflict,
+            TipUpdateError::Transient => ClaimedWrite::Transient,
+        };
+        let disposition = disposition_after_claim(write);
+        assert_eq!(disposition.status, 503);
+        assert!(disposition.release_claim);
     }
 }
 

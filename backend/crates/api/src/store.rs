@@ -21,6 +21,27 @@ use crate::items::{self, attr_bool, attr_n_u64, attr_s, s};
 
 const TIP_PAID_CONDITION: &str = "attribute_exists(tipId) AND checkoutSessionId = :session";
 
+/// A conditional check is a permanent mismatch. Other update failures can be retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TipUpdateError {
+    Conflict,
+    Transient,
+}
+
+pub(crate) fn classify_tip_update(conditional_check_failed: bool) -> TipUpdateError {
+    if conditional_check_failed {
+        TipUpdateError::Conflict
+    } else {
+        TipUpdateError::Transient
+    }
+}
+
+/// True when a stored checkout session is the one the paid event names.
+#[cfg(test)]
+pub(crate) fn tip_paid_condition_matches(stored_session: &str, event_session: &str) -> bool {
+    !stored_session.is_empty() && stored_session == event_session
+}
+
 #[derive(Debug)]
 pub struct StoreError;
 
@@ -349,8 +370,9 @@ impl Store {
         Ok(())
     }
 
-    pub async fn mark_tip_paid(&self, tip_id: &str, session_id: &str) -> Result<(), StoreError> {
-        self.client
+    pub async fn mark_tip_paid(&self, tip_id: &str, session_id: &str) -> Result<(), TipUpdateError> {
+        match self
+            .client
             .update_item()
             .table_name(&self.tips)
             .key("tipId", s(tip_id))
@@ -361,8 +383,16 @@ impl Store {
             .expression_attribute_values(":session", s(session_id))
             .send()
             .await
-            .map_err(|_| StoreError)?;
-        Ok(())
+        {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                let conflict = error
+                    .as_service_error()
+                    .map(UpdateItemError::is_conditional_check_failed_exception)
+                    .unwrap_or(false);
+                Err(classify_tip_update(conflict))
+            }
+        }
     }
 
     pub async fn tips_received_cents(&self, reader_id: &str) -> Result<u64, StoreError> {
@@ -1034,5 +1064,15 @@ mod tests {
     fn tip_paid_guard_requires_the_row_and_the_checkout_session() {
         assert!(TIP_PAID_CONDITION.contains("attribute_exists(tipId)"));
         assert!(TIP_PAID_CONDITION.contains("checkoutSessionId = :session"));
+    }
+
+    #[test]
+    fn builder_session_matches_mark_tip_paid_and_a_mismatch_is_a_conflict() {
+        let stored = "cs_test_builder";
+        assert!(super::tip_paid_condition_matches(stored, stored));
+        assert!(!super::tip_paid_condition_matches(stored, "cs_test_other"));
+        assert!(!super::tip_paid_condition_matches("", stored));
+        assert_eq!(super::classify_tip_update(true), super::TipUpdateError::Conflict);
+        assert_eq!(super::classify_tip_update(false), super::TipUpdateError::Transient);
     }
 }
