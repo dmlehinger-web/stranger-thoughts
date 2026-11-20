@@ -615,8 +615,9 @@ export class StrangerThoughtsStack extends cdk.Stack {
       throw new Error("prod requires -c certificateArn= so CloudFront can require TLS 1.2");
     }
     let apiOriginHost: string;
+    let apiDomain: apigwv2.DomainName | undefined;
     if (props.certificateArn) {
-      const apiDomain = new apigwv2.DomainName(this, "ApiDomain", {
+      apiDomain = new apigwv2.DomainName(this, "ApiDomain", {
         domainName: `api.${props.siteHost}`,
         certificate: acm.Certificate.fromCertificateArn(this, "ApiCert", props.certificateArn),
       });
@@ -688,27 +689,27 @@ export class StrangerThoughtsStack extends cdk.Stack {
 
     const alerts = sns.Topic.fromTopicArn(this, "Alerts", props.alertsTopicArn);
     const action = new cw_actions.SnsAction(alerts);
-    const reserved = 8 * 2 + 3;
-    const watchedFunctions = [healthFn, profileFn, matchingFn, addressFn, paymentsFn, webhookFn, accountFn, preservationFn, notifyFn, postConfirmFn, preTokenFn];
+    const period = cdk.Duration.minutes(5);
+    const apiFunctions = [healthFn, profileFn, matchingFn, addressFn, paymentsFn, webhookFn, accountFn, preservationFn];
+    const workerFunctions = [notifyFn, postConfirmFn, preTokenFn];
     const watchedTables = [users, readers, matches, tips, correspondence, preservation, rates];
-    // A metric-math alarm accepts at most 10 metrics. This stack has 11
-    // functions and 14 throttle series, so each alarm is one Metrics Insights
-    // query that names those resources. SEARCH() is rejected at deploy time.
-    // The query is a plain string: a token inside the expression makes CDK
-    // treat the placeholder as a metric id.
-    const concrete = (name: string | undefined, kind: string) => {
-      if (!name || name.includes("${") || name.includes("Token")) {
-        throw new Error(`${kind} name must be concrete for the alarm query`);
+    // Metrics Insights WHERE cannot use OR, and a metric-math alarm accepts at
+    // most 10 metrics. SEARCH() is also rejected at deploy time. Each alarm
+    // below is a sum of concrete metrics, split so none carries more than 10.
+    const sumOf = (metrics: cloudwatch.IMetric[]) => {
+      if (metrics.length < 1 || metrics.length > 10) {
+        throw new Error(`an alarm can carry 1 to 10 metrics, not ${metrics.length}`);
       }
-      return name;
+      const usingMetrics: Record<string, cloudwatch.IMetric> = {};
+      metrics.forEach((metric, index) => {
+        usingMetrics[`m${index + 1}`] = metric;
+      });
+      return new cloudwatch.MathExpression({
+        expression: Object.keys(usingMetrics).join(" + "),
+        usingMetrics,
+        period,
+      });
     };
-    const insight = (select: string, schema: string, dimension: string, names: string[]) => new cloudwatch.MathExpression({
-      expression: `SELECT ${select} FROM SCHEMA("${schema}", ${dimension}) WHERE ${names
-        .map((name) => `${dimension} = '${name}'`)
-        .join(" OR ")}`,
-      usingMetrics: {},
-      period: cdk.Duration.minutes(5),
-    });
     const alarm = (id: string, name: string, metric: cloudwatch.IMetric, threshold: number) => {
       const item = new cloudwatch.Alarm(this, id, {
         alarmName: name,
@@ -726,35 +727,36 @@ export class StrangerThoughtsStack extends cdk.Stack {
       metricName,
       dimensionsMap: { ApiId: httpApi.apiId, Stage: "$default" },
       statistic: "Sum",
-      period: cdk.Duration.minutes(5),
+      period,
     });
     alarm("Api5xx", `st-${stage}-api-5xx`, apiMetric("5xx"), 1);
     alarm("Api4xx", `st-${stage}-api-4xx`, apiMetric("4xx"), 50);
-    const functionNames = watchedFunctions.map((fn) =>
-      concrete((fn.node.defaultChild as lambda.CfnFunction).functionName, "function"),
-    );
-    const tableNames = watchedTables.map((item) =>
-      concrete((item.node.defaultChild as dynamodb.CfnTable).tableName, "table"),
-    );
-    alarm("LambdaErrors", `st-${stage}-lambda-errors`, insight("SUM(Errors)", "AWS/Lambda", "FunctionName", functionNames), 1);
-    alarm("LambdaThrottles", `st-${stage}-lambda-throttles`, insight("SUM(Throttles)", "AWS/Lambda", "FunctionName", functionNames), 1);
+    alarm("LambdaErrorsApi", `st-${stage}-lambda-errors-api`, sumOf(apiFunctions.map((fn) => fn.metricErrors({ statistic: "Sum", period }))), 1);
+    alarm("LambdaErrorsWorkers", `st-${stage}-lambda-errors-workers`, sumOf(workerFunctions.map((fn) => fn.metricErrors({ statistic: "Sum", period }))), 1);
+    alarm("LambdaThrottlesApi", `st-${stage}-lambda-throttles-api`, sumOf(apiFunctions.map((fn) => fn.metricThrottles({ statistic: "Sum", period }))), 1);
+    alarm("LambdaThrottlesWorkers", `st-${stage}-lambda-throttles-workers`, sumOf(workerFunctions.map((fn) => fn.metricThrottles({ statistic: "Sum", period }))), 1);
     alarm(
-      "LambdaConcurrency",
-      `st-${stage}-lambda-concurrency`,
-      insight("SUM(ConcurrentExecutions)", "AWS/Lambda", "FunctionName", functionNames),
-      Math.ceil(reserved * 0.8),
+      "LambdaConcurrencyApi",
+      `st-${stage}-lambda-concurrency-api`,
+      sumOf(apiFunctions.map((fn) => fn.metric("ConcurrentExecutions", { statistic: "Maximum", period }))),
+      Math.ceil(16 * 0.8),
     );
     alarm(
-      "DynamoThrottles",
-      `st-${stage}-dynamodb-throttles`,
-      new cloudwatch.MathExpression({
-        expression: "reads + writes",
-        usingMetrics: {
-          reads: insight("SUM(ReadThrottleEvents)", "AWS/DynamoDB", "TableName", tableNames),
-          writes: insight("SUM(WriteThrottleEvents)", "AWS/DynamoDB", "TableName", tableNames),
-        },
-        period: cdk.Duration.minutes(5),
-      }),
+      "LambdaConcurrencyWorkers",
+      `st-${stage}-lambda-concurrency-workers`,
+      sumOf(workerFunctions.map((fn) => fn.metric("ConcurrentExecutions", { statistic: "Maximum", period }))),
+      3,
+    );
+    alarm(
+      "DynamoReadThrottles",
+      `st-${stage}-dynamodb-read-throttles`,
+      sumOf(watchedTables.map((table) => table.metric("ReadThrottleEvents", { statistic: "Sum", period }))),
+      1,
+    );
+    alarm(
+      "DynamoWriteThrottles",
+      `st-${stage}-dynamodb-write-throttles`,
+      sumOf(watchedTables.map((table) => table.metric("WriteThrottleEvents", { statistic: "Sum", period }))),
       1,
     );
 
@@ -762,6 +764,9 @@ export class StrangerThoughtsStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ApiUrl", {
       value: props.certificateArn ? `https://${props.siteHost}/api` : httpApi.apiEndpoint,
     });
+    if (apiDomain) {
+      new cdk.CfnOutput(this, "ApiCustomDomainTarget", { value: apiDomain.regionalDomainName });
+    }
     new cdk.CfnOutput(this, "UserPoolId", { value: pool.userPoolId });
     new cdk.CfnOutput(this, "UserPoolClientId", { value: client.userPoolClientId });
     new cdk.CfnOutput(this, "CognitoDomain", {

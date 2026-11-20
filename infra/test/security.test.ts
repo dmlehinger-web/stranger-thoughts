@@ -163,21 +163,97 @@ test("stripe stays in test mode and the default template stays inside the bounda
   for (const name of [
     "st-dev-api-5xx",
     "st-dev-api-4xx",
-    "st-dev-lambda-errors",
-    "st-dev-lambda-throttles",
-    "st-dev-lambda-concurrency",
-    "st-dev-dynamodb-throttles",
+    "st-dev-lambda-errors-api",
+    "st-dev-lambda-errors-workers",
+    "st-dev-lambda-throttles-api",
+    "st-dev-lambda-throttles-workers",
+    "st-dev-lambda-concurrency-api",
+    "st-dev-lambda-concurrency-workers",
+    "st-dev-dynamodb-read-throttles",
+    "st-dev-dynamodb-write-throttles",
   ]) {
     assert.ok(names.includes(name), name);
   }
-  assert.equal(Object.keys(alarms).length, 6);
+  assert.equal(Object.keys(alarms).length, 10);
   const alarmBody = JSON.stringify(alarms);
   assert.equal(alarmBody.includes("SEARCH("), false);
-  assert.match(alarmBody, /SELECT /);
-  assert.match(alarmBody, /SUM\(Errors\)/);
-  assert.match(alarmBody, /st-dev-health/);
-  assert.match(alarmBody, /SUM\(ReadThrottleEvents\)/);
-  assert.match(alarmBody, /SUM\(WriteThrottleEvents\)/);
+  assert.equal(alarmBody.includes("SELECT "), false);
+  assert.equal(alarmBody.includes(" OR "), false);
+  const resourceName = (value: unknown) => {
+    if (typeof value === "string") {
+      return value;
+    }
+    const ref = value && typeof value === "object" && "Ref" in value ? String((value as { Ref: string }).Ref) : "";
+    const functionName = functions[ref]?.Properties?.FunctionName;
+    const tableName = tables[ref]?.Properties?.TableName;
+    return typeof functionName === "string" ? functionName : typeof tableName === "string" ? tableName : "";
+  };
+  const metricStats = (alarm: { Properties?: { Metrics?: Array<{ MetricStat?: { Metric?: { MetricName?: string, Dimensions?: Array<{ Name?: string, Value?: unknown }> }, Stat?: string, Period?: number } }>, MetricName?: string, Namespace?: string, Dimensions?: Array<{ Name?: string, Value?: unknown }>, Statistic?: string, Period?: number, AlarmName?: string, Threshold?: number } }) => {
+    const metrics = alarm.Properties?.Metrics;
+    if (Array.isArray(metrics)) {
+      return metrics.flatMap((item) => item.MetricStat ? [item.MetricStat] : []);
+    }
+    if (alarm.Properties?.MetricName) {
+      return [{
+        Metric: {
+          MetricName: alarm.Properties.MetricName,
+          Dimensions: alarm.Properties.Dimensions,
+        },
+        Stat: alarm.Properties.Statistic,
+        Period: alarm.Properties.Period,
+      }];
+    }
+    return [];
+  };
+  const covered = (metricName: string) => {
+    const values: string[] = [];
+    for (const alarm of Object.values(alarms)) {
+      assert.match(String(alarm.Properties?.AlarmName), /^st-/);
+      const stats = metricStats(alarm);
+      assert.ok(stats.length >= 1 && stats.length <= 10, alarm.Properties?.AlarmName);
+      for (const stat of stats) {
+        assert.equal(stat.Period, 300);
+        if (stat.Metric?.MetricName !== metricName) {
+          continue;
+        }
+        if (metricName === "ConcurrentExecutions") {
+          assert.equal(stat.Stat, "Maximum");
+        } else {
+          assert.equal(stat.Stat, "Sum");
+        }
+        for (const dimension of stat.Metric?.Dimensions ?? []) {
+          const resolved = resourceName(dimension.Value);
+          if (resolved) {
+            values.push(resolved);
+          }
+        }
+      }
+    }
+    return values;
+  };
+  const functionNames = Object.values(functions)
+    .map((fn) => fn.Properties?.FunctionName)
+    .filter((name): name is string => typeof name === "string" && name.startsWith("st-dev-"));
+  assert.equal(functionNames.length, 11);
+  for (const name of functionNames) {
+    for (const metric of ["Errors", "Throttles", "ConcurrentExecutions"]) {
+      assert.ok(covered(metric).includes(name), `${metric} ${name}`);
+    }
+  }
+  const tableNames = Object.values(tables)
+    .map((item) => item.Properties?.TableName)
+    .filter((name): name is string => typeof name === "string" && name.startsWith("st-dev-"));
+  assert.equal(tableNames.length, 7);
+  for (const name of tableNames) {
+    assert.ok(covered("ReadThrottleEvents").includes(name), name);
+    assert.ok(covered("WriteThrottleEvents").includes(name), name);
+  }
+  const byName = Object.fromEntries(Object.values(alarms).map((alarm) => [alarm.Properties?.AlarmName, alarm.Properties?.Threshold]));
+  assert.equal(byName["st-dev-lambda-concurrency-api"], 13);
+  assert.equal(byName["st-dev-lambda-concurrency-workers"], 3);
+  const outputs = JSON.stringify(synthesized.toJSON().Outputs ?? {});
+  assert.match(outputs, /ApiCustomDomainTarget/);
+  assert.match(outputs, /RegionalDomainName/);
   const apis = synthesized.findResources("AWS::ApiGatewayV2::Api");
   for (const api of Object.values(apis)) {
     assert.equal(api.Properties?.DisableExecuteApiEndpoint, true);

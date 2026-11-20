@@ -134,7 +134,7 @@ Point-in-time recovery can retain ciphertext for up to 35 days after a delete. T
 - API CORS allows `https://${siteHost}` only.
 - The API origin speaks TLS 1.2 to API Gateway. When `certificateArn` is set, the HTTP API sets `DisableExecuteApiEndpoint` and CloudFront’s `/api/*` origin is `api.<siteHost>` (the certificate has to cover that name). A dev synth without a certificate keeps the default execute-api origin so synthesis still has a working origin. Production synthesis requires an ACM certificate and sets the viewer policy to `TLSv1.2_2021`. A dev synth without `certificateArn` uses CloudFront’s default viewer certificate, which is the one case where this stack cannot raise the viewer minimum. Do not put real addresses on that distribution.
 - `X-Robots-Tag: noindex, noarchive` is added for `/write`, `/read`, `/auth`, and `/archive`, including the exact path with no trailing slash. `frontend/robots.txt` also disallows `/api/`.
-- The six alarms are Metrics Insights queries (`SELECT SUM(...)` / `SUM(ConcurrentExecutions)`) that name this stack’s functions and tables. No alarm expression uses `SEARCH()`. A metric-math alarm accepts at most ten metrics, and this stack has eleven functions.
+- Ten alarms, each a sum of at most ten concrete metrics: API 5xx and 4xx, Lambda errors, throttles, and concurrency split between the eight API functions and the three worker functions, and DynamoDB read and write throttles across the seven tables. Metrics Insights `WHERE` cannot use `OR`, and `SEARCH()` is rejected at deploy time.
 
 ## IAM
 
@@ -174,7 +174,7 @@ Without an AWS account:
 
 1. `cd backend && cargo test --workspace` — matching uniformity and the demographic source ban, rotate history, tip routing to the reader on the match, address authorization (current writer only), child-age rejection, webhook signature and idempotency, live-key rejection, redaction.
 2. `cd backend && cargo clippy --workspace --all-targets -- -D warnings`.
-3. `cd infra && npm test` — private bucket, origin access control, CSP and HSTS, address decrypt without ViaService, Stripe decrypts with ViaService, no wildcard data resource, `STRIPE_ALLOW_LIVE` false, no budget, no trail, no GuardDuty, no Secrets Manager, no SSM parameter, no SES identity, WAF off, six `st-*` alarms, every role on `st-boundary`, reserved concurrency, deletion protection, public routes limited to health and the Stripe webhook, and cdk-nag AwsSolutionsChecks with the suppressions below.
+3. `cd infra && npm test` — private bucket, origin access control, CSP and HSTS, address decrypt without ViaService, Stripe decrypts with ViaService, no wildcard data resource, `STRIPE_ALLOW_LIVE` false, no budget, no trail, no GuardDuty, no Secrets Manager, no SSM parameter, no SES identity, WAF off, ten `st-*` alarms, every role on `st-boundary`, reserved concurrency, deletion protection, public routes limited to health and the Stripe webhook, and cdk-nag AwsSolutionsChecks with the suppressions below.
 4. `cd infra && npx cdk synth -c stage=dev` — succeeds on the stub binaries. `npx cdk synth -c stage=prod` fails without `certificateArn`.
 5. `python3 frontend/check.py` — no third-party script host, no inline handlers, committed config stays in mock mode, font files present.
 6. `python3 scripts/build.py` — the waitlist site still generates, and its own CSP is untouched.
